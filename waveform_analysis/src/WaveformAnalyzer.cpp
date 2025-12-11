@@ -310,8 +310,8 @@ float WaveformAnalyzer::findxPercentofMax(const std::vector<float>& amps,
     if (std::abs(y2 - y1) < 1e-9f)
         return i + 0.5f; // avoid divide by zero, take mid-sample
 
-    float t_cross = i + (target - y1) / (y2 - y1);
-    return t_cross;
+    float i_cross = i + (target - y1) / (y2 - y1);
+    return i_cross;
 }
 
 
@@ -397,33 +397,33 @@ void WaveformAnalyzer::analyzeWaveforms() {
             // Otherwise we loop over them.
             for (int idx : peakIndices) {
 
-                float peakAmp, peakOffset;
+                int sampleOfMax = samplesByCh[ch][idx];
+                float peakAmp, peakSample;
                 if (timingMethod == "parabola") {
+                    float peakOffset;
                     fitParabola(amps, idx, peakAmp, peakOffset);
+                    peakSample = sampleOfMax + peakOffset;
                 }
                 else if (timingMethod == "percent_max")
                 {
                     peakAmp = amps[idx];
-                    peakOffset = findxPercentofMax(amps, idx, timingPercentMax);
+                    peakSample = findxPercentofMax(amps, idx, timingPercentMax);
                 } else {
                     std::cerr << "Unknown timing method: " << timingMethod << "\n";
                     peakAmp = amps[idx];
-                    peakOffset = 0.0f;
+                    peakSample = sampleOfMax;
                 }
-
-                int sampleOfMax = samplesByCh[ch][idx];
-                float totalSample = sampleOfMax + peakOffset;
 
                 float hitTime_ns =
                         timePerTimestamp * timestamp +
                         timePerFtst * ftst +
-                        timePerSample * totalSample;
+                        timePerSample * peakSample;
 
                 out_eventID = eventID;
                 out_channel = ch;
                 out_amp     = peakAmp;
                 out_time_ns = hitTime_ns;
-                out_sample  = totalSample;
+                out_sample  = peakSample;
 
                 hitTree.Fill();
 

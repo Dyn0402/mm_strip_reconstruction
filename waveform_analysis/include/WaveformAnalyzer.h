@@ -52,10 +52,11 @@ private:
     float thresholdSigma = 10.0;  // Number of pedestal RMS above which a hit is registered
     int peakMergeDistance = 5;  // number of samples within which peaks are merged
     float timePerSample = 20.0;  // ns per sample. Sampling period
-    float timePerFtst = 10.0;  // ns per fine timestamp unit
+    float timePerFtst = 10.0;  // ns per fine timestamp unit. Fixed by DREAM clock of 100MHz --> 10 ns. Shift the timestamp by this amount.
     float timePerTimestamp = 10.0;  // ns Timestamp is in clock cycles of 10 ns
     float timingPercentMax = 0.3;  // fraction of peak amplitude at which timing is calculated
     std::string timingMethod = "percent_max";  // "percent_max" or "parabola"
+    // std::string timingMethod = "parabola";  // "percent_max" or "parabola"
 
     // helpers
     void loadPedestals();
