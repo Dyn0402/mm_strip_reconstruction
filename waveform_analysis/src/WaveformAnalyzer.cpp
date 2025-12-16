@@ -20,59 +20,66 @@ WaveformAnalyzer::WaveformAnalyzer(const std::string& inputFileName,
 
 void WaveformAnalyzer::computePedestals() {
     if (pedestalFileName.empty()) {
-        std::cout << "No pedestal file provided — skipping pedestal calculation.\n";
-        return;
-    }
-
-    std::cout << "Computing pedestals from " << pedestalFileName << "\n";
-
-    TFile f(pedestalFileName.c_str(), "READ");
-    if (!f.IsOpen()) {
-        std::cerr << "Cannot open pedestal file.\n";
-        return;
-    }
-
-    TTree* nt = (TTree*)f.Get("nt");
-    if (!nt) {
-        std::cerr << "Pedestal file has no nt tree.\n";
-        return;
-    }
-
-    std::vector<UInt_t>* channel = nullptr;
-    std::vector<UShort_t>* sample = nullptr;
-    std::vector<UShort_t>* amplitude = nullptr;
-
-    nt->SetBranchAddress("channel", &channel);
-    nt->SetBranchAddress("sample", &sample);
-    nt->SetBranchAddress("amplitude", &amplitude);
-
-    std::unordered_map<int, PedestalData> accum;
-
-    Long64_t nentries = nt->GetEntries();
-    for (Long64_t i = 0; i < nentries; i++) {
-        nt->GetEntry(i);
-
-        for (size_t j = 0; j < channel->size(); j++) {
-            int ch = (*channel)[j];
-            float amp = (*amplitude)[j];
-
-            auto& pd = accum[ch];
-            pd.sum   += amp;
-            pd.sumsq += amp * amp;
-            pd.count++;
+        std::cout << "No pedestal file provided — assuming zero suppressed and using 256.\n";
+        // For zero-suppressed and pedestal subtracted data, the pedestals for each strip are set to 256.
+        // If channels is not suppressed, it should be a hit, so set RMS to 1 ADC count
+        for (int ch = 0; ch < 512; ch++) {
+            pedestalMap[ch] = {zeroSupressedBaseline, 1.0f};
         }
     }
+    else  // compute from pedestal file
+    {
+        std::cout << "Computing pedestals from " << pedestalFileName << "\n";
 
-    // compute mean and RMS for each channel
-    pedestalMap.clear();
-    for (auto& kv : accum) {
-        int ch = kv.first;
-        const PedestalData& pd = kv.second;
+        TFile f(pedestalFileName.c_str(), "READ");
+        if (!f.IsOpen()) {
+            std::cerr << "Cannot open pedestal file.\n";
+            return;
+        }
 
-        float mean = pd.sum / pd.count;
-        float rms  = std::sqrt(pd.sumsq / pd.count - mean * mean);
+        TTree* nt = (TTree*)f.Get("nt");
+        if (!nt) {
+            std::cerr << "Pedestal file has no nt tree.\n";
+            return;
+        }
 
-        pedestalMap[ch] = {mean, rms};
+        std::vector<UInt_t>* channel = nullptr;
+        std::vector<UShort_t>* sample = nullptr;
+        std::vector<UShort_t>* amplitude = nullptr;
+
+        nt->SetBranchAddress("channel", &channel);
+        nt->SetBranchAddress("sample", &sample);
+        nt->SetBranchAddress("amplitude", &amplitude);
+
+        std::unordered_map<int, PedestalData> accum;
+
+        Long64_t nentries = nt->GetEntries();
+        for (Long64_t i = 0; i < nentries; i++) {
+            nt->GetEntry(i);
+
+            for (size_t j = 0; j < channel->size(); j++) {
+                int ch = (*channel)[j];
+                float amp = (*amplitude)[j];
+
+                auto& pd = accum[ch];
+                pd.sum   += amp;
+                pd.sumsq += amp * amp;
+                pd.count++;
+            }
+        }
+
+        // compute mean and RMS for each channel
+        pedestalMap.clear();
+        for (auto& kv : accum) {
+            int ch = kv.first;
+            const PedestalData& pd = kv.second;
+
+            float mean = pd.sum / pd.count;
+            float rms  = std::sqrt(pd.sumsq / pd.count - mean * mean);
+
+            pedestalMap[ch] = {mean, rms};
+        }
+        f.Close();
     }
 
     // Write pedestal tree to output
@@ -159,13 +166,6 @@ void WaveformAnalyzer::computePedestals() {
     std::cout << "Pedestals written to output file.\n";
 }
 
-
-void WaveformAnalyzer::loadPedestals() {
-    // pedestalMap already filled by computePedestals()
-    if (pedestalMap.empty()) {
-        std::cout << "Warning: No pedestal data loaded.\n";
-    }
-}
 
 float WaveformAnalyzer::subtractPedestal(int ch, float ampl) const {
     auto it = pedestalMap.find(ch);
@@ -256,65 +256,6 @@ applyCommonNoiseSubtraction(
 }
 
 
-
-// simple 3-point parabolic interpolation
-// maxIndex is the bin of the max sample
-void WaveformAnalyzer::fitParabola(const std::vector<float>& amps,
-                                   int maxIndex,
-                                   float& peakAmp, float& peakOffset) const
-{
-    if (maxIndex <= 0 || maxIndex >= (int)amps.size() - 1) {
-        peakAmp = amps[maxIndex];
-        peakOffset = 0.0;
-        return;
-    }
-
-    float y1 = amps[maxIndex - 1];
-    float y2 = amps[maxIndex];
-    float y3 = amps[maxIndex + 1];
-
-    float denom = (y1 - 2*y2 + y3);
-    if (std::abs(denom) < 1e-9) {
-        peakAmp = y2;
-        peakOffset = 0;
-        return;
-    }
-
-    peakOffset = 0.5f * (y1 - y3) / denom; // in units of sample spacing
-    peakAmp = y2 - 0.25f * (y1 - y3) * peakOffset;
-}
-
-
-// Find the time (in sample units) at which the waveform rises above a fraction of the max
-float WaveformAnalyzer::findxPercentofMax(const std::vector<float>& amps,
-                                          int maxIndex,
-                                          float fraction) const
-{
-    if (amps.empty() || maxIndex <= 0 || maxIndex >= (int)amps.size())
-        return maxIndex; // fallback
-
-    float maxVal = amps[maxIndex];
-    float target = fraction * maxVal;
-
-    // Walk backwards from the peak until waveform drops below target
-    int i = maxIndex;
-    while (i > 0 && amps[i] > target) {
-        i--;
-    }
-
-    // i is now the last sample below target, i+1 is above target
-    float y1 = amps[i];
-    float y2 = amps[i + 1];
-
-    // Linear interpolation: t_cross = i + (target - y1)/(y2 - y1)
-    if (std::abs(y2 - y1) < 1e-9f)
-        return i + 0.5f; // avoid divide by zero, take mid-sample
-
-    float i_cross = i + (target - y1) / (y2 - y1);
-    return i_cross;
-}
-
-
 void WaveformAnalyzer::analyzeWaveforms() {
     std::cout << "Analyzing waveforms from " << inputFileName << "\n";
 
@@ -347,16 +288,36 @@ void WaveformAnalyzer::analyzeWaveforms() {
     TTree hitTree("hits", "reconstructed hits");
 
     ULong64_t out_eventID;
+    ULong64_t out_trigger_timestamp_ns;
     UShort_t  out_channel;
     Float_t   out_amp;
     Float_t   out_time_ns;
+    Float_t   out_time_of_max_ns;
     Float_t   out_sample;
+    Float_t   out_max_sample;
+    Float_t   out_local_baseline;
+    Float_t   out_local_max;
+    Float_t   out_left_sample;
+    Float_t   out_right_sample;
+    Float_t   out_time_over_threshold;
+    Float_t   out_integral;
+    Bool_t    out_saturated;
 
     hitTree.Branch("eventId", &out_eventID, "eventId/l");
+    hitTree.Branch("trigger_timestamp_ns", &out_trigger_timestamp_ns, "trigger_timestamp_ns/l");
     hitTree.Branch("channel", &out_channel, "channel/s");
     hitTree.Branch("amplitude", &out_amp, "amplitude/F");
     hitTree.Branch("time", &out_time_ns, "time/F");
+    hitTree.Branch("time_of_max", &out_time_of_max_ns, "time_of_max/F");
     hitTree.Branch("sample", &out_sample, "sample/F");
+    hitTree.Branch("max_sample", &out_max_sample, "max_sample/F");
+    hitTree.Branch("local_baseline", &out_local_baseline, "local_baseline/F");
+    hitTree.Branch("local_max", &out_local_max, "local_max/F");
+    hitTree.Branch("left_sample", &out_left_sample, "left_sample/F");
+    hitTree.Branch("right_sample", &out_right_sample, "right_sample/F");
+    hitTree.Branch("time_over_threshold", &out_time_over_threshold, "time_over_threshold/F");
+    hitTree.Branch("integral", &out_integral, "integral/F");
+    hitTree.Branch("saturated", &out_saturated, "saturated/O");
 
     Long64_t nentries = nt->GetEntries();
 
@@ -379,51 +340,38 @@ void WaveformAnalyzer::analyzeWaveforms() {
             waves = applyCommonNoiseSubtraction(waves, samplesByCh);
         }
 
+        // This line updates the 'waves' map to contain the dense, regular waveforms.
+        waves = fillZeroSuppressedSamples(waves, samplesByCh);
+
         // analyze per channel
         for (auto& kv : waves) {
             int ch = kv.first;
             std::vector<float>& amps = kv.second;
 
             float noiseRMS = pedestalMap.count(ch) ? pedestalMap[ch].rms : 3.0f;
-            auto peakIndices = findPeakIndices(amps, noiseRMS);
-            if (!peakIndices.empty()) {
-                peakIndices = mergePeaks(peakIndices, amps);
-            }
+            float max_adc_ped_sub = max_adc - (pedestalMap.count(ch) ? pedestalMap[ch].mean : 0.0f);
+            auto peaks = analyzeWaveform(amps, noiseRMS, max_adc_ped_sub);
+            for (auto& peak : peaks) {
 
-            // Fallback: no peaks found → continue
-            if (peakIndices.empty()) continue;
+                // Correct samples for ftst. ftst in units of clock cycles
+                peak.peakSample += static_cast<float>(ftst) * timePerFtst / timePerSample;
+                peak.timingSample += static_cast<float>(ftst) * timePerFtst / timePerSample;
 
-            // If multiple peaks not allowed, peakIndices will have size=1.
-            // Otherwise we loop over them.
-            for (int idx : peakIndices) {
-
-                int sampleOfMax = samplesByCh[ch][idx];
-                float peakAmp, peakSample;
-                if (timingMethod == "parabola") {
-                    float peakOffset;
-                    fitParabola(amps, idx, peakAmp, peakOffset);
-                    peakSample = sampleOfMax + peakOffset;
-                }
-                else if (timingMethod == "percent_max")
-                {
-                    peakAmp = amps[idx];
-                    peakSample = findxPercentofMax(amps, idx, timingPercentMax);
-                } else {
-                    std::cerr << "Unknown timing method: " << timingMethod << "\n";
-                    peakAmp = amps[idx];
-                    peakSample = sampleOfMax;
-                }
-
-                float hitTime_ns =
-                        timePerTimestamp * timestamp +
-                        timePerFtst * ftst +
-                        timePerSample * peakSample;
-
-                out_eventID = eventID;
-                out_channel = ch;
-                out_amp     = peakAmp;
-                out_time_ns = hitTime_ns;
-                out_sample  = peakSample;
+                out_eventID        = eventID;
+                out_trigger_timestamp_ns = timestamp * static_cast<int>(timePerTimestamp);
+                out_channel        = ch;
+                out_amp            = peak.peakAmplitude;
+                out_local_max      = peak.peakMax;
+                out_time_ns        = peak.timingSample * timePerSample;
+                out_time_of_max_ns = peak.peakSample * timePerSample;
+                out_sample         = peak.timingSample;
+                out_max_sample     = peak.peakSample;
+                out_local_baseline = peak.localBaseline;
+                out_left_sample    = peak.leftCrossIdx + ftst * timePerFtst / timePerSample;
+                out_right_sample   = peak.rightCrossIdx + ftst * timePerFtst / timePerSample;
+                out_time_over_threshold = peak.timeOverThreshold * timePerSample;
+                out_integral       = peak.integral;
+                out_saturated      = peak.saturated;
 
                 hitTree.Fill();
 
@@ -437,110 +385,371 @@ void WaveformAnalyzer::analyzeWaveforms() {
     fout.Close();
 }
 
-std::vector<int> WaveformAnalyzer::findPeakIndices(const std::vector<float>& wf,
-                                                   float noiseRMS) const
+
+/**
+ * @brief Converts zero-suppressed (sparse) waveform data to regular (dense) data
+ * by filling missing samples with a zero amplitude.
+ *
+ * The length of the final waveform for each channel is determined by the
+ * maximum sample index present in the input data + 1.
+ *
+ * @param waves The input map of channel ID -> vector of amplitudes (ZS data).
+ * @param samplesByCh The input map of channel ID -> vector of sample indices (ZS data).
+ * @return A new std::unordered_map<int, std::vector<float>> with regular (dense) waveforms.
+ */
+std::unordered_map<int, std::vector<float>> WaveformAnalyzer::fillZeroSuppressedSamples(
+    const std::unordered_map<int, std::vector<float>>& waves,
+    const std::unordered_map<int, std::vector<int>>& samplesByCh)
 {
-    std::vector<int> peaks;
-    if (wf.size() < 3) return peaks;
+    // The new map to hold the dense, regular waveforms
+    std::unordered_map<int, std::vector<float>> regularWaves;
 
-    // dynamic threshold
-    float thr = thresholdSigma * noiseRMS;
+    // Iterate over every channel present in the input data
+    for (const auto& pair : waves) {
+        int channelID = pair.first;
+        const std::vector<float>& zsAmplitudes = pair.second;
 
-    int bestIdx = -1;
-    float bestVal = thr;
-
-    int i = 1; // start from second sample
-    bool peakActive = false; // flag to hold until waveform drops below threshold
-
-    while (i < (int)wf.size() - 1) {
-        float y0 = wf[i-1];
-        float y1 = wf[i];
-        float y2 = wf[i+1];
-
-        if (y1 > y0 && y1 >= y2 && y1 > thr) {
-            if (!peakActive) {
-                // find plateau end
-                int start = i;
-                int end = i;
-                while (end + 1 < (int)wf.size() && wf[end + 1] == y1) end++;
-
-                int peakIdx = (start + end) / 2; // middle of plateau
-
-                if (allowMultiplePeaks) {
-                    peaks.push_back(peakIdx);
-                } else {
-                    if (y1 > bestVal) {
-                        bestVal = y1;
-                        bestIdx = peakIdx;
-                    }
-                }
-
-                peakActive = true;    // now hold
-                i = end + 1;          // skip plateau
-            } else {
-                i++; // peak still active, skip
-            }
-        } else {
-            if (y1 < thr) peakActive = false; // waveform dropped below threshold
-            i++;
+        // Retrieve corresponding sample indices
+        auto samplesIt = samplesByCh.find(channelID);
+        if (samplesIt == samplesByCh.end()) {
+            std::cerr << "Warning: No sample indices found for channel " << channelID << ". Skipping." << std::endl;
+            regularWaves[channelID] = {};
+            continue;
         }
+
+        const std::vector<int>& zsIndices = samplesIt->second;
+
+        // Basic validation
+        if (zsAmplitudes.size() != zsIndices.size()) {
+            std::cerr << "Error: Mismatch in size between amplitudes (" << zsAmplitudes.size()
+                      << ") and indices (" << zsIndices.size() << ") for channel " << channelID << ". Skipping." << std::endl;
+            regularWaves[channelID] = {};
+            continue;
+        }
+
+        // --- 1. Determine the maximum sample index to size the new waveform ---
+        int maxIndex = -1;
+        if (!zsIndices.empty()) {
+            // Finds the largest index recorded in the zero-suppressed data
+            maxIndex = *std::max_element(zsIndices.begin(), zsIndices.end());
+        }
+
+        if (maxIndex < 0) {
+            regularWaves[channelID] = {};
+            continue;
+        }
+
+        // The size of the regular waveform is maxIndex + 1 (0-based indexing)
+        size_t regularWaveSize = static_cast<size_t>(maxIndex) + 1;
+
+        // --- 2. Initialize the regular waveform with zeros (0.0f) ---
+        // This vector now represents samples [0, 1, ..., maxIndex], all set to 0.0f
+        std::vector<float> regularWave(regularWaveSize, 0.0f);
+
+        // --- 3. Fill in the recorded (non-zero-suppressed) values ---
+        for (size_t i = 0; i < zsAmplitudes.size(); ++i) {
+            int index = zsIndices[i];
+            float amplitude = zsAmplitudes[i];
+
+            // Place the recorded amplitude at its correct, absolute index
+            // The check below is technically redundant due to maxIndex, but safe.
+            if (index < regularWaveSize) {
+                regularWave[index] = amplitude;
+            }
+        }
+
+        // --- 4. Store the new regular waveform ---
+        // std::move is used for efficiency to transfer ownership of the vector data.
+        regularWaves[channelID] = std::move(regularWave);
     }
 
-    if (!allowMultiplePeaks && bestIdx != -1) {
-        peaks.push_back(bestIdx);
-    }
-
-    return peaks;
+    return regularWaves;
 }
 
 
-
-
-std::vector<int> WaveformAnalyzer::mergePeaks(const std::vector<int>& peaks,
-                                              const std::vector<float>& wf) const
+/// New unified analyzer function
+std::vector<PeakInfo> WaveformAnalyzer::analyzeWaveform(
+    const std::vector<float>& wf,
+    float noiseRMS,
+    float adcMax = 4000.0f          // ADC saturation value for detection
+) const
 {
-    std::vector<int> result;
-    if (peaks.empty()) return result;
+    std::vector<PeakInfo> results;
+    if (wf.size() < 3) return results;  // Waveform is too short
 
-    // copy and ensure peaks are sorted ascending
-    std::vector<int> p = peaks;
-    std::sort(p.begin(), p.end());
+    const int N = (int)wf.size();
+    const float dynThr = thresholdSigma * noiseRMS;
 
-    auto valueAt = [&](int idx) -> float {
-        if (idx < 0 || idx >= (int)wf.size()) return -std::numeric_limits<float>::infinity();
-        return wf[idx];
-    };
+    int i = 0;
+    while (i < N) {
+        // Skip until we find a sample above dynamic threshold
+        if (wf[i] <= dynThr) { ++i; continue; }
 
-    // Start first group with the first peak
-    int bestIdx = p[0];
-    float bestVal = valueAt(bestIdx);
+        // Found a sample above threshold: treat this as a candidate pulse start
+        int startIdx = i;
 
-    for (size_t i = 1; i < p.size(); ++i) {
-        // if within merge distance from previous peak, treat as same group
-        if (p[i] - p[i - 1] <= peakMergeDistance) {
-            float val = valueAt(p[i]);
-            if (val > bestVal) {
-                bestVal = val;
-                bestIdx = p[i];
+        // Walk forward until waveform goes below threshold to locate the pulse window.
+        int j = i;
+        while (j + 1 < N && wf[j + 1] > dynThr) ++j;
+        int endIdx = j;
+
+        // Ensure width is meaningfully wide, otherwise skip past
+        if (endIdx - startIdx + 1 < minWidthSamples) {
+            i = endIdx + 1;
+            continue;
+        }
+
+        // Within [startIdx..endIdx] find plateau-aware maximum sample (middle of plateau)
+        int maxIdx = startIdx;
+        float maxVal = wf[startIdx];
+        int k = startIdx;
+        while (k <= endIdx) {
+            // handle plateau runs: detect equal neighbor values
+            int runStart = k;
+            int runEnd = k;
+            while (runEnd + 1 <= endIdx && wf[runEnd + 1] == wf[k]) ++runEnd;
+            // choose plateau middle sample as candidate
+            int candidate = (runStart + runEnd) / 2;
+            if (wf[candidate] > maxVal) {
+                maxVal = wf[candidate];
+                maxIdx = candidate;
+            }
+            k = runEnd + 1;
+        }
+
+        // Estimate a local baseline robustly from samples left of the leading edge.
+        // We'll use the median of up to baselineLeftWindow samples immediately left of startIdx.
+        float baseline = 0.0f;
+        if (local_baseline)
+        {
+            int leftStart = std::max(0, startIdx - baselineLeftWindow);
+            int leftCount = startIdx - leftStart;
+            if (leftCount <= 0) {
+                // fallback: use very local min before peak or zero
+                baseline = 0.0f;
+            } else {
+                // copy into temp and take median (robust against previous pulses)
+                std::vector<float> tmp;
+                tmp.reserve(leftCount);
+                for (int tt = leftStart; tt < startIdx; ++tt) tmp.push_back(wf[tt]);
+                std::nth_element(tmp.begin(), tmp.begin() + tmp.size()/2, tmp.end());
+                baseline = tmp[tmp.size()/2];
+                if (tmp.size() > 1 && tmp.size()%2 == 0) {
+                    // average with lower median for even count (not necessary but fine)
+                    auto it = std::max_element(tmp.begin(), tmp.begin() + tmp.size()/2);
+                    baseline = 0.5f * (baseline + *it);
+                }
+            }
+        }
+
+        // Subtract baseline when computing peak amplitude and integrals
+        // Detect saturation (flat top near adcMax)
+        bool saturated = false;
+        int satStart = -1, satEnd = -1;
+        float satThreshold = satFrac * adcMax;
+        {
+            for (int t = startIdx; t <= endIdx; ++t) {
+                if (wf[t] >= satThreshold) {
+                    saturated = true;
+                    if (satStart < 0) satStart = t;
+                    satEnd = t;
+                }
+            }
+        }
+
+        // Find peak amplitude and time of max
+        float peakAmpFit = wf[maxIdx] - baseline;
+        float peakSample = maxIdx;
+        if (saturated)  // For saturated peaks, do linear extrapolation from edges of saturated region
+        {
+            std::cout << "Max ADC: " << adcMax << ", satThreshold: " << satThreshold << "\n";
+            saturatedLinearExtrapolation(
+                satStart,
+                satEnd,
+                wf.data(),
+                N,
+                baseline,
+                peakSample,
+                peakAmpFit
+            );
+
+            std::cout << "Saturated peak detected at index " << maxIdx << " with sat range [" << satStart << ", " << satEnd << "]\n";
+            std::cout << "Peak sample is " << peakSample << " samples, fitted amplitude = " << peakAmpFit << "\n";
+        }
+        else  // Fit parabola around the integer maxIdx if possible to get sub-sample peak
+        {
+            float peakOffset = 0.0f;
+            if (maxIdx > 0 && maxIdx < N-1) {
+                float y1 = wf[maxIdx-1] - baseline;
+                float y2 = wf[maxIdx]   - baseline;
+                float y3 = wf[maxIdx+1] - baseline;
+                float denom = (y1 - 2*y2 + y3);
+                if (std::abs(denom) > 1e-9f) {
+                    peakOffset = 0.5f * (y1 - y3) / denom; // in samples
+                    peakAmpFit = y2 - 0.25f * (y1 - y3) * peakOffset;
+                } else {
+                    peakOffset = 0.0f;
+                    peakAmpFit = y2;
+                }
+            }
+            peakSample = maxIdx + peakOffset;
+        }
+
+        // find x% timing on leading edge relative to baseline-subtracted peak amplitude
+        float fraction = timingPercentMax; // e.g. 0.5
+        float target = fraction * peakAmpFit + baseline; // careful: function findxPercentofMax expects raw samples
+        // We'll implement a local leading-edge crossing search to be robust with baseline-subtraction.
+        int leadIdx = maxIdx;
+        while (leadIdx > 0 && wf[leadIdx] > target) --leadIdx;
+        // linear interp between leadIdx and leadIdx+1
+        float timingSample = (float)leadIdx;
+        if (leadIdx >= 0 && leadIdx+1 < N) {
+            float yL = wf[leadIdx];
+            float yH = wf[leadIdx+1];
+            if (std::abs(yH - yL) > 1e-9f) {
+                timingSample = leadIdx + (target - yL) / (yH - yL);
+            } else {
+                timingSample = leadIdx + 0.5f;
             }
         } else {
-            // group ended, keep best of that group
-            result.push_back(bestIdx);
-            bestIdx = p[i];
-            bestVal = valueAt(bestIdx);
+            timingSample = (float)maxIdx;
+        }
+
+        // Walk left from maxIdx until waveform falls <= dynamic threshold (or touches baseline) to find left crossing.
+        int leftCross = maxIdx;
+        while (leftCross > 0 && wf[leftCross] > dynThr) --leftCross;
+        // Walk right from maxIdx until waveform falls <= dynamic threshold
+        int rightCross = maxIdx;
+        while (rightCross + 1 < N && wf[rightCross] > dynThr) ++rightCross;
+
+        // Compute integral and TOT using baseline-subtracted samples between leftCross+1 .. rightCross-1 (inclusive)
+        float integral = 0.0f;
+        for (int tt = leftCross + 1; tt <= rightCross - 1; ++tt) {
+            if (tt >= 0 && tt < N) integral += (wf[tt] - baseline);
+        }
+
+        float tot = float(std::max(0, rightCross - leftCross - 1)); // number of samples above threshold
+
+        // Build PeakInfo
+        PeakInfo pi;
+        pi.peakIndex = maxIdx;
+        pi.peakAmplitude = peakAmpFit;
+        pi.peakMax = wf[maxIdx] - baseline;
+        pi.peakSample = peakSample;
+        pi.timingSample = timingSample;
+        pi.leftCrossIdx = leftCross;
+        pi.rightCrossIdx = rightCross;
+        pi.timeOverThreshold = tot;
+        pi.integral = integral;
+        pi.saturated = saturated;
+        pi.localBaseline = baseline;
+
+        // Only accept if amplitude large enough relative to noise
+        if (pi.peakAmplitude >= thresholdSigma * noiseRMS && (endIdx - startIdx + 1) >= minSamplesForPeak) {
+            results.push_back(pi);
+        }
+
+        // Advance i to after the rightCross to avoid merging
+        i = rightCross + 1;
+    }
+
+    return results;
+}
+
+
+// Function to perform linear extrapolation to find peak for saturated pulses
+void WaveformAnalyzer::saturatedLinearExtrapolation(
+    int satStartIdx,
+    int satEndIdx,
+    const float* wf,
+    int N,
+    float baseline,
+    float& peakSample,
+    float& peakAmpFit
+) const {
+    // Get linear extrapolations from the edges of the saturated region
+    float leftSlope = 0.0f;
+    float rightSlope = 0.0f;
+    if (satStartIdx > 0) {
+        leftSlope = (wf[satStartIdx] - wf[satStartIdx - 1]) ;
+    }
+    if (satEndIdx + 1 < N) {
+        rightSlope = (wf[satEndIdx + 1] - wf[satEndIdx]) ;
+    }
+
+    // If this exact waveform is found, pause for user input [  -8.    8.  708. 3720. 3712. 3700. 3692. 3696.  939. -256. -256.]
+    std::vector<float> exampleWaveform = {  -8.0f,    8.0f,  708.0f, 3720.0f, 3712.0f, 3700.0f, 3692.0f, 3696.0f,  939.0f, -256.0f, -256.0f };
+    bool match = false;
+    if (N == (int)exampleWaveform.size())
+    {
+        match = true;
+        for (int t = 0; t < N; ++t)
+        {
+            if (std::abs(wf[t] - exampleWaveform[t]) > 1e-3f)
+            {
+                match = false;
+                break;
+            }
         }
     }
 
-    // push last group's best
-    result.push_back(bestIdx);
-    return result;
+
+    if (match)
+    {
+        std::cout << "Waveform found:" << std::endl;
+
+        // Cout startIdx and endIdx samples
+        std::cout << "Saturated region from index " << satStartIdx << " to " << satEndIdx << "\n";
+        // Cout all the data points from startIdx - 1 to endIdx + 1 for debugging
+        std::cout << "All samples:\n";
+        for (int t = 0; t<N; ++t) {
+            if (t >= 0 && t < N) {
+                std::cout << "  Sample " << t << ": " << wf[t] << "\n";
+            }
+        }
+
+        // Cout everything and then pause until user hits enter
+        std::cout << "Saturated peak extrapolation:\n";
+        std::cout << "  Left slope: " << leftSlope << "\n";
+        std::cout << "  Right slope: " << rightSlope << "\n";
+    }
+
+    // Ensure we have valid slopes. Left should be positive, right should be negative
+    if (leftSlope <= 0 || rightSlope >= 0)
+    {
+        peakSample = static_cast<float>(satStartIdx);
+        peakAmpFit = wf[satStartIdx] - baseline; // fallback to first saturated sample
+        return;
+    }
+
+    // Estimate peak position by finding intersection of the two lines
+    float leftIntercept = wf[satStartIdx] - leftSlope * satStartIdx;
+    float rightIntercept = wf[satEndIdx] - rightSlope * satEndIdx;
+
+    peakSample = (rightIntercept - leftIntercept) / (leftSlope - rightSlope);
+    peakAmpFit = leftSlope * peakSample + leftIntercept - baseline;
+
+    if (match)
+    {
+        std::cout << "Saturated peak extrapolation:\n";
+        std::cout << "Saturated region from index " << satStartIdx << " to " << satEndIdx << "\n";
+        std::cout << "  Left slope: " << leftSlope << ", intercept: " << leftIntercept << "\n";
+        std::cout << "  Right slope: " << rightSlope << ", intercept: " << rightIntercept << "\n";
+        std::cout << "  Estimated peak sample: " << peakSample << "\n";
+        std::cout << "  Estimated peak amplitude: " << peakAmpFit << "\n";
+
+        std::cin.get();  // wait for user input
+    }
+
+
+
 }
 
 
 int WaveformAnalyzer::run() {
     TFile fout(outputFileName.c_str(), "RECREATE");
     fout.Close();
-    if (hasPedestal) computePedestals();
+    computePedestals();  // If no pedestals, this will assume zero-suppressed data and subtract 256
     analyzeWaveforms();
     return 0;
 }
