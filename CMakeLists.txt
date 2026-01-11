@@ -6,7 +6,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # ROOT detection
 #set(ROOT_DIR "$ENV{ROOTSYS}/cmake/ROOTConfig.cmake")
+message(STATUS "Looking for ROOT... ROOT_DIR='${ROOT_DIR}'")
 find_package(ROOT REQUIRED COMPONENTS Tree RIO Core)
+message(STATUS "Found ROOT version: ${ROOT_VERSION}")
 include(${ROOT_USE_FILE})
 
 # Add subdirectories
