@@ -562,7 +562,6 @@ std::vector<PeakInfo> WaveformAnalyzer::analyzeWaveform(
         float peakSample = maxIdx;
         if (saturated)  // For saturated peaks, do linear extrapolation from edges of saturated region
         {
-            std::cout << "Max ADC: " << adcMax << ", satThreshold: " << satThreshold << "\n";
             saturatedLinearExtrapolation(
                 satStart,
                 satEnd,
@@ -572,9 +571,6 @@ std::vector<PeakInfo> WaveformAnalyzer::analyzeWaveform(
                 peakSample,
                 peakAmpFit
             );
-
-            std::cout << "Saturated peak detected at index " << maxIdx << " with sat range [" << satStart << ", " << satEnd << "]\n";
-            std::cout << "Peak sample is " << peakSample << " samples, fitted amplitude = " << peakAmpFit << "\n";
         }
         else  // Fit parabola around the integer maxIdx if possible to get sub-sample peak
         {
@@ -677,43 +673,6 @@ void WaveformAnalyzer::saturatedLinearExtrapolation(
         rightSlope = (wf[satEndIdx + 1] - wf[satEndIdx]) ;
     }
 
-    // If this exact waveform is found, pause for user input [  -8.    8.  708. 3720. 3712. 3700. 3692. 3696.  939. -256. -256.]
-    std::vector<float> exampleWaveform = {  -8.0f,    8.0f,  708.0f, 3720.0f, 3712.0f, 3700.0f, 3692.0f, 3696.0f,  939.0f, -256.0f, -256.0f };
-    bool match = false;
-    if (N == (int)exampleWaveform.size())
-    {
-        match = true;
-        for (int t = 0; t < N; ++t)
-        {
-            if (std::abs(wf[t] - exampleWaveform[t]) > 1e-3f)
-            {
-                match = false;
-                break;
-            }
-        }
-    }
-
-
-    if (match)
-    {
-        std::cout << "Waveform found:" << std::endl;
-
-        // Cout startIdx and endIdx samples
-        std::cout << "Saturated region from index " << satStartIdx << " to " << satEndIdx << "\n";
-        // Cout all the data points from startIdx - 1 to endIdx + 1 for debugging
-        std::cout << "All samples:\n";
-        for (int t = 0; t<N; ++t) {
-            if (t >= 0 && t < N) {
-                std::cout << "  Sample " << t << ": " << wf[t] << "\n";
-            }
-        }
-
-        // Cout everything and then pause until user hits enter
-        std::cout << "Saturated peak extrapolation:\n";
-        std::cout << "  Left slope: " << leftSlope << "\n";
-        std::cout << "  Right slope: " << rightSlope << "\n";
-    }
-
     // Ensure we have valid slopes. Left should be positive, right should be negative
     if (leftSlope <= 0 || rightSlope >= 0)
     {
@@ -728,21 +687,6 @@ void WaveformAnalyzer::saturatedLinearExtrapolation(
 
     peakSample = (rightIntercept - leftIntercept) / (leftSlope - rightSlope);
     peakAmpFit = leftSlope * peakSample + leftIntercept - baseline;
-
-    if (match)
-    {
-        std::cout << "Saturated peak extrapolation:\n";
-        std::cout << "Saturated region from index " << satStartIdx << " to " << satEndIdx << "\n";
-        std::cout << "  Left slope: " << leftSlope << ", intercept: " << leftIntercept << "\n";
-        std::cout << "  Right slope: " << rightSlope << ", intercept: " << rightIntercept << "\n";
-        std::cout << "  Estimated peak sample: " << peakSample << "\n";
-        std::cout << "  Estimated peak amplitude: " << peakAmpFit << "\n";
-
-        std::cin.get();  // wait for user input
-    }
-
-
-
 }
 
 

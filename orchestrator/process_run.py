@@ -16,52 +16,64 @@ from typing import Tuple, Optional
 DECODE_EXECUTABLE = '/home/dylan/CLionProjects/mm_strip_reconstruction/cmake-build-debug/decoder/decode'
 WAVEFORM_ANALYSIS_EXECUTABLE = '/home/dylan/CLionProjects/mm_strip_reconstruction/cmake-build-debug/waveform_analysis/analyze_waveforms'
 
-decode = False
+decode = True
 analyze = True
 
 def main():
-    # runs_dir = '/media/dylan/data/x17/nov_25_beam_test/dream_run/'
-    # runs = ['run_60']
+    runs_dir = '/media/dylan/data/x17/nov_25_beam_test/dream_run/'
+    runs = ['run_60']
     # pedestal_dir = 'ped_thresh_1_12_25_18_30'
     # pedestal_dir = 'ped_thresh_30_11_25_14_40'
     # runs_dir = '/media/dylan/data/sps_beam_test_25/run_54/rotation_30_test_0/'
-    runs_dir = '/media/dylan/data/sps_beam_test_25/run_67/rotation_-60_banco_scan_0/'
-    runs = ['raw_daq_data']
+    # runs_dir = '/media/dylan/data/sps_beam_test_25/run_67/rotation_-60_banco_scan_0/'
+    # runs = ['raw_daq_data']
     # pedestal_dir = 'dummy_peds'
     pedestal_dir = ''
+
+    raw_dream_dir_name = 'raw_dream'
+    decoded_root_dir_name = 'decoded_root'
+    hits_dir_name = 'hits_root'
+
     for run in runs:
         run_dir = os.path.join(runs_dir, run)
-        fdf_files = [file for file in os.listdir(run_dir) if file.endswith('.fdf')]
+        raw_dream_dir = os.path.join(run_dir, raw_dream_dir_name)
+        fdf_files = [file for file in os.listdir(raw_dream_dir) if file.endswith('.fdf')]
         for file in fdf_files:
-            file_path = os.path.join(run_dir, file)
+            file_path = os.path.join(raw_dream_dir, file)
+            decoded_root_out_path = f'{run_dir}/{decoded_root_dir_name}/{file.replace(".fdf", ".root")}'
             if decode:
                 print(f'\nDecoding {file_path}...')
-                root_file = decode_fdf(file_path)
-                print(f'Decoded to {root_file}')
-            else:
-                root_file = file_path.replace('.fdf', '.root')
+                decode_fdf(file_path, decoded_root_out_path)
+                print(f'Decoded to {decoded_root_out_path}')
+            hits_out_path = f'{run_dir}/{hits_dir_name}/{file.replace(".fdf", "_hits.root")}'
             if analyze:
-                print(f'\nAnalyzing waveforms in {root_file}...')
-                analyze_waveforms(root_file, os.path.join(runs_dir, pedestal_dir))
-                print(f'Analyzed waveforms in {root_file}\n')
+                print(f'\nAnalyzing waveforms in {decoded_root_out_path}...')
+                analyze_waveforms(decoded_root_out_path, os.path.join(runs_dir, pedestal_dir), hits_out_path)
+                print(f'Analyzed waveforms in {decoded_root_out_path}\n')
     print('donzo')
 
 
-def decode_fdf(file_path):
+def decode_fdf(file_path, out_root_path=None):
     """
     Decode .fdf file and extract relevant data.
-    Placeholder function - implementation depends on .fdf format.
+    :param file_path: Path to the .fdf file.
+    :param out_root_path: Optional path for the output .root file. If None, replaces .fdf with .root in the input path.
     """
-    output_root = file_path.replace('.fdf', '.root')
-    command = f"{DECODE_EXECUTABLE} {file_path} {output_root}"
+    if out_root_path is None:
+        out_root_path = file_path.replace('.fdf', '.root')
+    else:
+        make_dir_if_not_exists(os.path.dirname(out_root_path))
+    command = f"{DECODE_EXECUTABLE} {file_path} {out_root_path}"
     os.system(command)
-    return output_root
 
 
-def analyze_waveforms(root_path, pedestal_dir):
+def analyze_waveforms(root_path, pedestal_dir, hits_out_path=None):
     """
     Analyze waveforms from the decoded .root file.
-    Placeholder function - implementation depends on analysis requirements.
+    :param root_path: Path to the decoded .root file.
+    :param pedestal_dir: Directory containing pedestal files.
+    :param hits_out_path: Optional path for the output hits .root file.
+    If None, replaces .root with _hits.root in the input path.
     """
     file_num, feu_num = extract_file_numbers_tuple(os.path.basename(root_path))
     ped_files = find_file_feu_file(pedestal_dir, file_num=None, feu_num=feu_num, file_extension='.root')
@@ -74,8 +86,11 @@ def analyze_waveforms(root_path, pedestal_dir):
     else:
         ped_file_path = os.path.join(pedestal_dir, ped_files[0])
         print(f'Using pedestal file: {ped_file_path}')
-    out_file_path = root_path.replace('.root', '_hits.root')
-    command = f"{WAVEFORM_ANALYSIS_EXECUTABLE} {root_path} {out_file_path} {ped_file_path}"
+    if hits_out_path is not None:
+        hits_out_path = root_path.replace('.root', '_hits.root')
+    else:
+        make_dir_if_not_exists(os.path.dirname(hits_out_path))
+    command = f"{WAVEFORM_ANALYSIS_EXECUTABLE} {root_path} {hits_out_path} {ped_file_path}"
     print(f'Analyzing waveforms with command: {command}')
     os.system(command)
 
@@ -142,6 +157,15 @@ def extract_file_numbers_tuple(filename: str) -> Optional[Tuple[int, int]]:
         return (int(file_num_str), int(feu_num_str))
     else:
         return None
+
+
+def make_dir_if_not_exists(dir_path: str):
+    """
+    Creates the directory if it does not already exist.
+    :param dir_path: Path to the directory.
+    """
+    if not os.path.exists(dir_path):
+        os.makedirs(dir_path)
 
 
 if __name__ == '__main__':
