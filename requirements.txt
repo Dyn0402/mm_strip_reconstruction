@@ -1,3 +1,8 @@
+Requirements:
+ROOT v6.30.02
+libyaml-cpp-dev
+nlohmann-json3-dev
+
 # --- Core scientific / analysis ---
 numpy
 psutil
