@@ -20,36 +20,55 @@ decode = True
 analyze = True
 
 def main():
-    runs_dir = '/media/dylan/data/x17/nov_25_beam_test/dream_run/'
-    runs = ['run_60']
+    # runs_dir = '/media/dylan/data/x17/nov_25_beam_test/dream_run/'
+    runs_dir = '/media/dylan/data/x17/cosmic_bench/det_1/mx17_1-27-26/'
+    runs = ['mx17_det1_1-27-26']
     # pedestal_dir = 'ped_thresh_1_12_25_18_30'
     # pedestal_dir = 'ped_thresh_30_11_25_14_40'
     # runs_dir = '/media/dylan/data/sps_beam_test_25/run_54/rotation_30_test_0/'
     # runs_dir = '/media/dylan/data/sps_beam_test_25/run_67/rotation_-60_banco_scan_0/'
     # runs = ['raw_daq_data']
     # pedestal_dir = 'dummy_peds'
-    pedestal_dir = ''
+    # pedestal_dir = ''
+    pedestal_dir = 'same'
 
-    raw_dream_dir_name = 'raw_dream'
+    # raw_dream_dir_name = 'raw_dream'
+    raw_dream_dir_name = 'raw_daq_data'
     decoded_root_dir_name = 'decoded_root'
     hits_dir_name = 'hits_root'
 
     for run in runs:
         run_dir = os.path.join(runs_dir, run)
-        raw_dream_dir = os.path.join(run_dir, raw_dream_dir_name)
-        fdf_files = [file for file in os.listdir(raw_dream_dir) if file.endswith('.fdf')]
-        for file in fdf_files:
-            file_path = os.path.join(raw_dream_dir, file)
-            decoded_root_out_path = f'{run_dir}/{decoded_root_dir_name}/{file.replace(".fdf", ".root")}'
-            if decode:
-                print(f'\nDecoding {file_path}...')
-                decode_fdf(file_path, decoded_root_out_path)
-                print(f'Decoded to {decoded_root_out_path}')
-            hits_out_path = f'{run_dir}/{hits_dir_name}/{file.replace(".fdf", "_hits.root")}'
+        run_dir_dirs = os.listdir(run_dir)
+        for sub_run_name in run_dir_dirs:
+            if not os.path.isdir(os.path.join(run_dir, sub_run_name)):
+                continue
+
+            sub_run_dir = os.path.join(run_dir, sub_run_name)
+            raw_dream_dir = os.path.join(sub_run_dir, raw_dream_dir_name)
+            if not os.path.exists(raw_dream_dir):
+                print(f'No raw dream directory found at {raw_dream_dir}, skipping...')
+                continue
             if analyze:
-                print(f'\nAnalyzing waveforms in {decoded_root_out_path}...')
-                analyze_waveforms(decoded_root_out_path, os.path.join(runs_dir, pedestal_dir), hits_out_path)
-                print(f'Analyzed waveforms in {decoded_root_out_path}\n')
+                make_dir_if_not_exists(f'{sub_run_dir}/{hits_dir_name}')
+            print(f'Processing run directory: {raw_dream_dir}')
+            fdf_files = [file for file in os.listdir(raw_dream_dir) if file.endswith('.fdf')]
+            for file in fdf_files:
+                file_path = os.path.join(raw_dream_dir, file)
+                decoded_root_out_path = f'{sub_run_dir}/{decoded_root_dir_name}/{file.replace(".fdf", ".root")}'
+                if decode:
+                    print(f'\nDecoding {file_path}...')
+                    decode_fdf(file_path, decoded_root_out_path)
+                    print(f'Decoded to {decoded_root_out_path}')
+                hits_out_path = f'{sub_run_dir}/{hits_dir_name}/{file.replace(".fdf", "_hits.root")}'
+                if analyze:
+                    print(f'\nAnalyzing waveforms in {decoded_root_out_path}...')
+                    if pedestal_dir == 'same':
+                        sub_run_ped_path = os.path.join(sub_run_dir, decoded_root_dir_name)
+                    else:
+                        sub_run_ped_path = os.path.join(runs_dir, sub_run_dir, pedestal_dir)
+                    analyze_waveforms(decoded_root_out_path, sub_run_ped_path, hits_out_path)
+                    print(f'Analyzed waveforms in {decoded_root_out_path} to {hits_out_path}\n')
     print('donzo')
 
 
@@ -76,7 +95,11 @@ def analyze_waveforms(root_path, pedestal_dir, hits_out_path=None):
     If None, replaces .root with _hits.root in the input path.
     """
     file_num, feu_num = extract_file_numbers_tuple(os.path.basename(root_path))
-    ped_files = find_file_feu_file(pedestal_dir, file_num=None, feu_num=feu_num, file_extension='.root')
+
+    if pedestal_dir == 'same':
+        pedestal_dir = os.path.dirname(root_path)
+
+    ped_files = find_file_feu_file(pedestal_dir, file_num=None, feu_num=feu_num, file_extension='.root', flag='_pedthr_')
     if not ped_files:
         print(f'No pedestal file found for file number {file_num} and FEU number {feu_num}')
         ped_file_path = ''
@@ -86,16 +109,17 @@ def analyze_waveforms(root_path, pedestal_dir, hits_out_path=None):
     else:
         ped_file_path = os.path.join(pedestal_dir, ped_files[0])
         print(f'Using pedestal file: {ped_file_path}')
-    if hits_out_path is not None:
+    if hits_out_path is None:
         hits_out_path = root_path.replace('.root', '_hits.root')
     else:
         make_dir_if_not_exists(os.path.dirname(hits_out_path))
+    print(f'\nhits_out_path: {hits_out_path}\n')
     command = f"{WAVEFORM_ANALYSIS_EXECUTABLE} {root_path} {hits_out_path} {ped_file_path}"
     print(f'Analyzing waveforms with command: {command}')
     os.system(command)
 
 
-def find_file_feu_file(search_dir_path, file_num=None, feu_num=None, file_extension=None) -> list:
+def find_file_feu_file(search_dir_path, file_num=None, feu_num=None, file_extension=None, flag=None) -> list:
     """
     Finds a list of files in the specified directory matching the given file number and FEU number.
 
@@ -104,15 +128,19 @@ def find_file_feu_file(search_dir_path, file_num=None, feu_num=None, file_extens
         file_num (int): The file number to match (xxx).
         feu_num (int): The FEU number to match (yy).
         file_extension (str): The file extension to filter by.
+        Flag (str): A specific flag that should be present in the filename.
         Returns:
         List[str]: A list of matching filenames.
     """
-    if file_num is None and feu_num is None:  # If no criteria provided, return all files
+    if file_num is None and feu_num is None and file_extension is None and flag is None:  # If no criteria provided, return all files
         return os.listdir(search_dir_path)
 
     matching_files = []
     for filename in os.listdir(search_dir_path):
         if file_extension is not None and not filename.endswith(file_extension):
+            continue
+
+        if flag is not None and flag not in filename:
             continue
 
         extracted = extract_file_numbers_tuple(filename)
