@@ -12,17 +12,22 @@ import os
 import re
 from typing import Tuple, Optional
 
+# BASE_SOFT = '/home/dylan/CLionProjects/mm_strip_reconstruction/cmake-build-debug/'
+# BASE_DATA = '/media/dylan/data/x17/cosmic_bench/'
 
-DECODE_EXECUTABLE = '/home/dylan/CLionProjects/mm_strip_reconstruction/cmake-build-debug/decoder/decode'
-WAVEFORM_ANALYSIS_EXECUTABLE = '/home/dylan/CLionProjects/mm_strip_reconstruction/cmake-build-debug/waveform_analysis/analyze_waveforms'
+BASE_SOFT = '/home/mx17/CLionProjects/mm_strip_reconstruction/cmake-build-debug/'
+BASE_DATA = '/mnt/data/x17/cosmic_bench/'
+
+DECODE_EXECUTABLE = f'{BASE_SOFT}decoder/decode'
+WAVEFORM_ANALYSIS_EXECUTABLE = f'{BASE_SOFT}waveform_analysis/analyze_waveforms'
 
 decode = True
 analyze = True
 
 def main():
     # runs_dir = '/media/dylan/data/x17/nov_25_beam_test/dream_run/'
-    runs_dir = '/media/dylan/data/x17/cosmic_bench/det_1/mx17_1-27-26/'
-    runs = ['mx17_det1_1-27-26']
+    runs_dir = f'{BASE_DATA}det_1/'
+    runs = ['mx17_det1_overnight_run_1-27-26']
     # pedestal_dir = 'ped_thresh_1_12_25_18_30'
     # pedestal_dir = 'ped_thresh_30_11_25_14_40'
     # runs_dir = '/media/dylan/data/sps_beam_test_25/run_54/rotation_30_test_0/'
@@ -53,7 +58,19 @@ def main():
                 make_dir_if_not_exists(f'{sub_run_dir}/{hits_dir_name}')
             print(f'Processing run directory: {raw_dream_dir}')
             fdf_files = [file for file in os.listdir(raw_dream_dir) if file.endswith('.fdf')]
-            for file in fdf_files:
+
+            if decode:
+                ped_fdf_files = [file for file in fdf_files if '_pedthr_' in file]
+                for file in ped_fdf_files:
+                        file_path = os.path.join(raw_dream_dir, file)
+                        decoded_root_out_path = f'{sub_run_dir}/{decoded_root_dir_name}/{file.replace(".fdf", ".root")}'
+                        print(f'\nDecoding pedestal file {file_path}...')
+                        decode_fdf(file_path, decoded_root_out_path)
+                        print(f'Decoded to {decoded_root_out_path}\n')
+
+            data_fdf_files = [file for file in fdf_files if '_datrun_' in file]
+
+            for file in data_fdf_files:
                 file_path = os.path.join(raw_dream_dir, file)
                 decoded_root_out_path = f'{sub_run_dir}/{decoded_root_dir_name}/{file.replace(".fdf", ".root")}'
                 if decode:
