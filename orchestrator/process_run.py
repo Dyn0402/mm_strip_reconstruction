@@ -84,8 +84,9 @@ def main():
                         os.path.join(decoded_dir, f.replace('.fdf', '.root'))
                     )
             # Check pedestal_dir if not 'same'
-            if PEDESTAL_DIR != 'same' and os.path.exists(PEDESTAL_DIR):
+            if PEDESTAL_DIR != 'same':
                 # Look for ped_fdfs and decode if not already done
+                print(f'Checking pedestals in {PEDESTAL_DIR}...')
                 for f in ped_fdfs:
                     ped_root_path = os.path.join(PEDESTAL_DIR, f.replace('.fdf', '.root'))
                     if not os.path.exists(ped_root_path):
@@ -96,6 +97,7 @@ def main():
                         )
                     else:
                         print(f"Pedestal {f} already decoded at {ped_root_path}, skipping")
+            input('Press Enter to continue to data decoding and analysis...')
 
             # ---- Decode + analyze data in parallel ----
             if DECODE:
