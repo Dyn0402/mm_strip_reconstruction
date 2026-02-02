@@ -83,19 +83,41 @@ def main():
                         os.path.join(raw_dir, f),
                         os.path.join(decoded_dir, f.replace('.fdf', '.root'))
                     )
+            # Check pedestal_dir if not 'same'
+            if PEDESTAL_DIR != 'same' and os.path.exists(PEDESTAL_DIR):
+                # Look for ped_fdfs and decode if not already done
+                for f in ped_fdfs:
+                    ped_root_path = os.path.join(PEDESTAL_DIR, f.replace('.fdf', '.root'))
+                    if not os.path.exists(ped_root_path):
+                        print(f"Decoding pedestal {f} to {ped_root_path}")
+                        decode_file(
+                            os.path.join(raw_dir, f),
+                            ped_root_path
+                        )
+                    else:
+                        print(f"Pedestal {f} already decoded at {ped_root_path}, skipping")
 
             # ---- Decode + analyze data in parallel ----
-            tasks = []
-            with ThreadPoolExecutor(max_workers=n_threads) as pool:
-                for f in data_fdfs:
-                    fdf_path = os.path.join(raw_dir, f)
-                    root_path = os.path.join(decoded_dir, f.replace('.fdf', '.root'))
-                    hits_path = os.path.join(hits_dir, f.replace('.fdf', '_hits.root'))
+            if DECODE:
+                tasks = []
+                with ThreadPoolExecutor(max_workers=n_threads) as pool:
+                    for f in data_fdfs:
+                        fdf_path = os.path.join(raw_dir, f)
+                        root_path = os.path.join(decoded_dir, f.replace('.fdf', '.root'))
 
-                    if DECODE:
-                        tasks.append(pool.submit(decode_file, fdf_path, root_path))
+                        if DECODE:
+                            tasks.append(pool.submit(decode_file, fdf_path, root_path))
 
-                    if ANALYZE:
+                    for t in as_completed(tasks):
+                        t.result()
+
+            if ANALYZE:
+                tasks = []
+                with ThreadPoolExecutor(max_workers=n_threads) as pool:
+                    for f in data_fdfs:
+                        root_path = os.path.join(decoded_dir, f.replace('.fdf', '.root'))
+                        hits_path = os.path.join(hits_dir, f.replace('.fdf', '_hits.root'))
+
                         tasks.append(pool.submit(
                             analyze_file,
                             root_path,
@@ -103,8 +125,9 @@ def main():
                             hits_path
                         ))
 
-                for t in as_completed(tasks):
-                    t.result()
+                    for t in as_completed(tasks):
+                        t.result()
+
 
             if COMBINE:
                 # Get file numbers from data files
