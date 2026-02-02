@@ -24,7 +24,7 @@ from time import sleep
 # BASE_SOFT = '/home/dylan/CLionProjects/mm_strip_reconstruction/cmake-build-debug/'
 # BASE_DATA = '/media/dylan/data/x17/cosmic_bench/'
 BASE_SOFT = '/home/mx17/CLionProjects/mm_strip_reconstruction/cmake-build-debug/'
-BASE_DATA = '/mnt/data/x17/beam_feb/runs/'
+BASE_DATA = '/mnt/data/x17/beam_feb/'
 
 DECODE_EXECUTABLE = f'{BASE_SOFT}decoder/decode'
 WAVEFORM_ANALYSIS_EXECUTABLE = f'{BASE_SOFT}waveform_analysis/analyze_waveforms'
@@ -41,11 +41,12 @@ DECODED_ROOT_DIR_NAME = 'decoded_root'
 HITS_DIR_NAME = 'hits_root'
 COMBINED_HITS_DIR_NAME = 'combined_hits_root'
 
-PEDESTAL_DIR = 'same'   # or explicit directory name
+# PEDESTAL_DIR = 'same'   # or explicit directory name
+PEDESTAL_DIR = f'{BASE_DATA}/pedestals/pedestals_02-02-26_10-49-02/pedestals/'
 
 
 def main():
-    runs_dir = f'{BASE_DATA}'
+    runs_dir = f'{BASE_DATA}runs/'
     runs = ['run_15', 'run_16']
 
     n_threads = effective_thread_count()
