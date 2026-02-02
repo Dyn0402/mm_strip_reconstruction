@@ -21,8 +21,10 @@ from time import sleep
 # CONFIG
 # =========================
 
-BASE_SOFT = '/home/dylan/CLionProjects/mm_strip_reconstruction/cmake-build-debug/'
-BASE_DATA = '/media/dylan/data/x17/cosmic_bench/'
+# BASE_SOFT = '/home/dylan/CLionProjects/mm_strip_reconstruction/cmake-build-debug/'
+# BASE_DATA = '/media/dylan/data/x17/cosmic_bench/'
+BASE_SOFT = '/home/mx17/CLionProjects/mm_strip_reconstruction/cmake-build-debug/'
+BASE_DATA = '/mnt/data/x17/beam_feb/runs/'
 
 DECODE_EXECUTABLE = f'{BASE_SOFT}decoder/decode'
 WAVEFORM_ANALYSIS_EXECUTABLE = f'{BASE_SOFT}waveform_analysis/analyze_waveforms'
@@ -32,7 +34,7 @@ DECODE = False
 ANALYZE = False
 COMBINE = True
 
-FREE_THREADS = 7      # Leave this many threads free, or None to use all available
+FREE_THREADS = 2      # Leave this many threads free, or None to use all available
 
 RAW_DREAM_DIR_NAME = 'raw_daq_data'
 DECODED_ROOT_DIR_NAME = 'decoded_root'
@@ -43,8 +45,8 @@ PEDESTAL_DIR = 'same'   # or explicit directory name
 
 
 def main():
-    runs_dir = f'{BASE_DATA}det_1/'
-    runs = ['mx17_det1_daytime_run_1-28-26']
+    runs_dir = f'{BASE_DATA}'
+    runs = ['run_15', 'run_16']
 
     n_threads = effective_thread_count()
     print(f"Using {n_threads} worker threads")
