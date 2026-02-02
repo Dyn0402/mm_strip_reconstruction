@@ -30,8 +30,8 @@ DECODE_EXECUTABLE = f'{BASE_SOFT}decoder/decode'
 WAVEFORM_ANALYSIS_EXECUTABLE = f'{BASE_SOFT}waveform_analysis/analyze_waveforms'
 COMBINE_HITS_EXECUTABLE = f'{BASE_SOFT}feu_hit_combiner/combine_feus_hits'
 
-DECODE = False
-ANALYZE = False
+DECODE = True
+ANALYZE = True
 COMBINE = True
 
 FREE_THREADS = 2      # Leave this many threads free, or None to use all available
