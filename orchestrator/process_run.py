@@ -31,6 +31,7 @@ WAVEFORM_ANALYSIS_EXECUTABLE = f'{BASE_SOFT}waveform_analysis/analyze_waveforms'
 COMBINE_HITS_EXECUTABLE = f'{BASE_SOFT}feu_hit_combiner/combine_feus_hits'
 
 DECODE = True
+REDECODE_PEDS = False
 ANALYZE = True
 COMBINE = True
 
@@ -96,13 +97,21 @@ def main():
             # ---- Decode pedestals serially ----
             if DECODE:
                 ped_fdfs = [f for f in os.listdir(ped_fdf_path) if '_pedthr_' in f and f.endswith('.fdf')]
+                if not REDECODE_PEDS:
+                    # Check if decoded root files already there
+                    already_decoded = []
+                    for f in ped_fdfs:
+                        root_path = os.path.join(ped_fdf_path, f.replace('.fdf', '.root'))
+                        if os.path.exists(root_path):
+                            already_decoded.append(f)
+
+                    # Remove already_decoded from ped_fdfs
+                    ped_fdfs = [f for f in ped_fdf_path if f not in already_decoded]
                 for f in ped_fdfs:
                     decode_file(
                         os.path.join(ped_fdf_path, f),
                         os.path.join(ped_fdf_path, f.replace('.fdf', '.root'))
                     )
-
-            input('Pedestals decode, continue?')
 
             # ---- Decode + analyze data in parallel ----
             if DECODE:
