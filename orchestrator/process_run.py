@@ -106,7 +106,7 @@ def main():
                             already_decoded.append(f)
 
                     # Remove already_decoded from ped_fdfs
-                    ped_fdfs = [f for f in ped_fdf_path if f not in already_decoded]
+                    ped_fdfs = [f for f in ped_fdfs if f not in already_decoded]
                 for f in ped_fdfs:
                     decode_file(
                         os.path.join(ped_fdf_path, f),
