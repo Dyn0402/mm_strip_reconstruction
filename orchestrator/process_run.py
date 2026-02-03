@@ -84,7 +84,7 @@ def main():
             elif PEDESTAL_LOC == 'find':
                 # Look for pedestal_run.txt file and get ped_run name from there
                 ped_run_txt_name = 'pedestal_run.txt'
-                ped_run_txt_path = os.path.join(subrun_dir, ped_run_txt_name)
+                ped_run_txt_path = os.path.join(subrun_dir, 'raw_daq_data', ped_run_txt_name)
                 if os.path.exists(ped_run_txt_path):
                     with open(ped_run_txt_path, 'r') as f:
                         ped_run_name = f.read().strip()
