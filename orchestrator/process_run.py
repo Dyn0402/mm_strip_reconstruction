@@ -98,8 +98,8 @@ def main():
                 ped_fdfs = [f for f in os.listdir(ped_fdf_path) if '_pedthr_' in f and f.endswith('.fdf')]
                 for f in ped_fdfs:
                     decode_file(
-                        os.path.join(raw_dir, f),
-                        os.path.join(decoded_dir, f.replace('.fdf', '.root'))
+                        os.path.join(ped_fdf_path, f),
+                        os.path.join(ped_fdf_path, f.replace('.fdf', '.root'))
                     )
 
             input('Pedestals decode, continue?')
