@@ -49,7 +49,7 @@ PEDESTAL_DIR = f'{BASE_DATA}pedestals/'
 
 def main():
     runs_dir = f'{BASE_DATA}runs/'
-    runs = ['run_15', 'run_16']
+    runs = ['run_17']
 
     n_threads = effective_thread_count()
     print(f"Using {n_threads} worker threads")
