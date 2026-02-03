@@ -23,7 +23,7 @@ from time import sleep
 
 # BASE_SOFT = '/home/dylan/CLionProjects/mm_strip_reconstruction/cmake-build-debug/'
 # BASE_DATA = '/media/dylan/data/x17/cosmic_bench/'
-BASE_SOFT = '/home/mx17/CLionProjects/mm_strip_reconstruction/cmake-build-debug/'
+BASE_SOFT = '/home/mx17/CLionProjects/mm_strip_reconstruction/build/'
 BASE_DATA = '/mnt/data/x17/beam_feb/'
 
 DECODE_EXECUTABLE = f'{BASE_SOFT}decoder/decode'
@@ -41,8 +41,9 @@ DECODED_ROOT_DIR_NAME = 'decoded_root'
 HITS_DIR_NAME = 'hits_root'
 COMBINED_HITS_DIR_NAME = 'combined_hits_root'
 
-# PEDESTAL_DIR = 'same'   # or explicit directory name
-PEDESTAL_DIR = f'{BASE_DATA}/pedestals/pedestals_02-02-26_10-49-02/pedestals/'
+PEDESTAL_LOC = 'find'  # 'same' for same dir as data, 'abs' for absolute path, 'find' to search from .prg files
+PEDESTAL_DIR = f'{BASE_DATA}pedestals/'
+# PEDESTAL_DIR = f'{BASE_DATA}pedestals/pedestals_02-02-26_10-49-02/pedestals/'
 
 
 def main():
@@ -73,31 +74,33 @@ def main():
                 make_dir_if_not_exists(hits_dir)
 
             fdf_files = [f for f in os.listdir(raw_dir) if f.endswith('.fdf')]
-            ped_fdfs = [f for f in fdf_files if '_pedthr_' in f]
             data_fdfs = [f for f in fdf_files if '_datrun_' in f]
+
+            ped_fdf_path = ''
+            if PEDESTAL_LOC == 'same':
+                ped_fdf_path = raw_dir
+            elif PEDESTAL_LOC == 'abs':
+                ped_fdf_path = PEDESTAL_DIR
+            elif PEDESTAL_LOC == 'find':
+                # Look for pedestal_run.txt file and get ped_run name from there
+                ped_run_txt_name = 'pedestal_run.txt'
+                ped_run_txt_path = os.path.join(subrun_dir, ped_run_txt_name)
+                if os.path.exists(ped_run_txt_path):
+                    with open(ped_run_txt_path, 'r') as f:
+                        ped_run_name = f.read().strip()
+                    ped_fdf_path = os.path.join(PEDESTAL_DIR, ped_run_name, 'pedestals')
+                else:
+                    print(f"No pedestal_run.txt found at {ped_run_txt_path}, cannot find pedestals, skipping run")
+                    continue
 
             # ---- Decode pedestals serially ----
             if DECODE:
+                ped_fdfs = [f for f in os.listdir(ped_fdf_path) if '_pedthr_' in f]
                 for f in ped_fdfs:
                     decode_file(
                         os.path.join(raw_dir, f),
                         os.path.join(decoded_dir, f.replace('.fdf', '.root'))
                     )
-            # Check pedestal_dir if not 'same'
-            if PEDESTAL_DIR != 'same':
-                # Look for ped_fdfs and decode if not already done
-                print(f'Checking pedestals in {PEDESTAL_DIR}...')
-                for f in ped_fdfs:
-                    ped_root_path = os.path.join(PEDESTAL_DIR, f.replace('.fdf', '.root'))
-                    if not os.path.exists(ped_root_path):
-                        print(f"Decoding pedestal {f} to {ped_root_path}")
-                        decode_file(
-                            os.path.join(raw_dir, f),
-                            ped_root_path
-                        )
-                    else:
-                        print(f"Pedestal {f} already decoded at {ped_root_path}, skipping")
-            input('Press Enter to continue to data decoding and analysis...')
 
             # ---- Decode + analyze data in parallel ----
             if DECODE:
@@ -123,7 +126,7 @@ def main():
                         tasks.append(pool.submit(
                             analyze_file,
                             root_path,
-                            PEDESTAL_DIR,
+                            ped_fdf_path,
                             hits_path
                         ))
 
