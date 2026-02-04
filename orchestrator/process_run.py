@@ -9,6 +9,7 @@ Created as mm_strip_reconstruction/process_run
 """
 
 import os
+import sys
 import re
 import math
 from typing import Tuple, Optional, List, Dict
@@ -50,6 +51,9 @@ PEDESTAL_DIR = f'{BASE_DATA}pedestals/'
 def main():
     runs_dir = f'{BASE_DATA}runs/'
     runs = ['run_19']
+
+    if len(sys.argv) == 2:
+        runs = [sys.argv[1]]
 
     n_threads = effective_thread_count()
     print(f"Using {n_threads} worker threads")
