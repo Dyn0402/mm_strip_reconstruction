@@ -66,10 +66,10 @@ private:
     std::unordered_map<int, ChannelPedestal> pedestalMap;
 
     // configuration
-    bool commonNoiseSubtraction = false;  // if true, subtract common noise per event per channel
+    bool commonNoiseSubtraction = true;  // if true, subtract common noise per event per channel
     bool allowMultiplePeaks = true;  // if false, only the highest peak per channel per event is kept
     bool local_baseline = false;  // if true, use local baseline per peak; if false, use global pedestal mean
-    float thresholdSigma = 10.0;  // Number of pedestal RMS above which a hit is registered
+    float thresholdSigma = 5.0;  // Number of pedestal RMS above which a hit is registered
     int peakMergeDistance = 5;  // number of samples within which peaks are merged
 
     int minSamplesForPeak = 3;  // minimum number of samples above threshold to consider a peak
