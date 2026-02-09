@@ -44,15 +44,15 @@ DECODED_ROOT_DIR_NAME = 'decoded_root'
 HITS_DIR_NAME = 'hits_root'
 COMBINED_HITS_DIR_NAME = 'combined_hits_root'
 
-# PEDESTAL_LOC = 'find'  # 'same' for same dir as data, 'abs' for absolute path, 'find' to search from .prg files
-# PEDESTAL_DIR = f'{BASE_DATA}pedestals/'
-PEDESTAL_LOC = 'abs'  # 'same' for same dir as data, 'abs' for absolute path, 'find' to search from .prg files
-PEDESTAL_DIR = f'{BASE_DATA}pedestals/pedestals_02-02-26_10-49-02/pedestals/'
+PEDESTAL_LOC = 'find'  # 'same' for same dir as data, 'abs' for absolute path, 'find' to search from .prg files
+PEDESTAL_DIR = f'{BASE_DATA}pedestals/'
+# PEDESTAL_LOC = 'abs'  # 'same' for same dir as data, 'abs' for absolute path, 'find' to search from .prg files
+# PEDESTAL_DIR = f'{BASE_DATA}pedestals/pedestals_02-02-26_10-49-02/pedestals/'
 
 
 def main():
-    # runs_dir = f'{BASE_DATA}runs/'
-    runs_dir = f'{BASE_DATA}tests/'
+    runs_dir = f'{BASE_DATA}runs/'
+    # runs_dir = f'{BASE_DATA}tests/'
     runs = ['run_19']
 
     if len(sys.argv) == 2:
