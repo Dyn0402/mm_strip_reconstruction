@@ -51,7 +51,7 @@ PEDESTAL_DIR = f'{BASE_DATA}pedestals/'
 
 def main():
     # runs_dir = f'{BASE_DATA}runs/'
-    runs_dir = f'{BASE_DATA}tests/noise_test/'
+    runs_dir = f'{BASE_DATA}tests/'
     runs = ['run_19']
 
     if len(sys.argv) == 2:
