@@ -467,7 +467,212 @@ std::unordered_map<int, std::vector<float>> WaveformAnalyzer::fillZeroSuppressed
 }
 
 
-/// New unified analyzer function
+/// ---------------------------------------------------------------------------
+/// findPulseRegions  –  derivative-based, pile-up-aware pulse separator
+/// ---------------------------------------------------------------------------
+/// Strategy
+/// --------
+/// 1. Smooth the waveform with a box-car of half-width derivativeSmoothWidth.
+/// 2. Differentiate (central differences) to get the instantaneous slope.
+/// 3. Locate every local maximum of the derivative that exceeds
+///    derivThresholdSigma * noiseRMS / sample ("rising-edge seed").
+/// 4. Merge seeds that are closer than derivMergeDistance samples.
+/// 5. For each seed, walk left to where the waveform first drops to/below
+///    the amplitude threshold (= thresholdSigma * noiseRMS) — this is the
+///    pulse start.  Walk right to either:
+///      (a) the sample just before the *next* seed's start (pile-up cut), or
+///      (b) where the waveform falls back below threshold (isolated pulse).
+/// 6. Reject regions narrower than minWidthSamples.
+///
+/// The resulting [start, end] intervals are non-overlapping and cover every
+/// pulse the derivative can resolve, including pulses riding on a tail.
+/// ---------------------------------------------------------------------------
+std::vector<WaveformAnalyzer::PulseRegion>
+WaveformAnalyzer::findPulseRegions(
+    const std::vector<float>& wf,
+    float noiseRMS) const
+{
+    std::vector<PulseRegion> regions;
+    const int N = (int)wf.size();
+    if (N < 3) return regions;
+
+    const float ampThr   = thresholdSigma  * noiseRMS;
+    const float derivThr = derivThresholdSigma * noiseRMS; // per-sample slope threshold
+
+    // ------------------------------------------------------------------ //
+    // Step 1 – box-car smooth                                             //
+    // ------------------------------------------------------------------ //
+    const int hw = std::max(0, derivativeSmoothWidth); // half-width
+    std::vector<float> smooth(N, 0.0f);
+    for (int i = 0; i < N; ++i) {
+        int lo = std::max(0, i - hw);
+        int hi = std::min(N - 1, i + hw);
+        float s = 0.0f;
+        for (int k = lo; k <= hi; ++k) s += wf[k];
+        smooth[i] = s / float(hi - lo + 1);
+    }
+
+    // ------------------------------------------------------------------ //
+    // Step 2 – central-difference derivative                              //
+    // ------------------------------------------------------------------ //
+    std::vector<float> deriv(N, 0.0f);
+    for (int i = 1; i < N - 1; ++i)
+        deriv[i] = 0.5f * (smooth[i + 1] - smooth[i - 1]);
+    deriv[0]     = smooth[1] - smooth[0];
+    deriv[N - 1] = smooth[N - 1] - smooth[N - 2];
+
+    // ------------------------------------------------------------------ //
+    // Step 3 – find local maxima of deriv above derivThr ("seeds")       //
+    // Uses an arm/trigger/reset state machine so a new peak is only      //
+    // accepted after the derivative has fallen back below derivResetThr. //
+    // ------------------------------------------------------------------ //
+    // derivResetThr should be <= derivThr; a good starting value is 0    //
+    // (derivative must return to ~flat) or a small positive fraction of  //
+    // derivThr (e.g. 0.3 * derivThr) to tolerate a slowly-falling tail. //
+
+    std::vector<int> seeds;
+    int    pendingPeak  = -1;     // index of the best candidate seen so far
+    float  pendingVal   = -std::numeric_limits<float>::max();
+    bool   armed        = true;   // ready to accept a new peak?
+
+    for (int i = 1; i < N - 1; ++i) {
+        if (armed) {
+            // Track the running maximum while above derivThr
+            if (deriv[i] > derivThr) {
+                if (deriv[i] > pendingVal) {
+                    pendingVal  = deriv[i];
+                    pendingPeak = i;
+                }
+            } else if (pendingPeak >= 0) {
+                // Just dropped below derivThr — commit the best peak seen
+                seeds.push_back(pendingPeak);
+                pendingPeak = -1;
+                pendingVal  = -std::numeric_limits<float>::max();
+                armed       = false;   // must reset before next peak
+            }
+        } else {
+            // Waiting for derivative to fall back below the reset threshold
+            if (deriv[i] <= derivResetThr) {
+                armed = true;
+            }
+        }
+    }
+    // Flush a pending peak at end-of-waveform
+    if (armed && pendingPeak >= 0)
+        seeds.push_back(pendingPeak);
+
+    if (seeds.empty()) return regions;
+
+    // ------------------------------------------------------------------ //
+    // Step 4 – merge seeds within derivMergeDistance                     //
+    // ------------------------------------------------------------------ //
+    std::vector<int> merged;
+    merged.push_back(seeds[0]);
+    for (int k = 1; k < (int)seeds.size(); ++k) {
+        if (seeds[k] - merged.back() <= derivMergeDistance) {
+            // keep the one with the larger derivative
+            if (deriv[seeds[k]] > deriv[merged.back()])
+                merged.back() = seeds[k];
+        } else {
+            merged.push_back(seeds[k]);
+        }
+    }
+
+    // ------------------------------------------------------------------ //
+    // Step 5 – assign pulse regions (two-pass boundary negotiation)       //
+    // ------------------------------------------------------------------ //
+
+    // Pass 1: find the natural right boundary for every seed independently.
+    // Stop at whichever comes first: waveform drops below ampThr, or we
+    // reach the next detected seed (the start of the next pulse's rise).
+    std::vector<int> rightEnds(merged.size());
+    for (int k = 0; k < (int)merged.size(); ++k) {
+        int end        = merged[k];
+        int nextSeedAt = (k + 1 < (int)merged.size()) ? merged[k + 1] : N;
+
+        while (end + 1 < N && wf[end + 1] > ampThr && end + 1 < nextSeedAt)
+            ++end;
+
+        rightEnds[k] = end;
+    }
+
+    // Pass 2: assign left boundaries and resolve overlaps between neighbours.
+    // For each seed k:
+    //   - Its natural left boundary is "walk left until below threshold".
+    //   - If that boundary overlaps with the previous seed's region, the two
+    //     regions share a contested zone [prevSeed .. thisSeed].  We place the
+    //     split at the local minimum in that valley, giving each pulse the
+    //     downslope that belongs to it.
+    for (int k = 0; k < (int)merged.size(); ++k) {
+        int seed   = merged[k];
+        int endIdx = rightEnds[k];
+
+        // --- natural left boundary ---
+        // Stop when either:
+        //   (a) amplitude drops back below ampThr, or
+        //   (b) derivative drops back below derivResetThr (same reset threshold
+        //       used in Step 3 — the waveform has stopped rising sharply enough
+        //       that we are on the tail of a previous pulse)
+        int startIdx = seed;
+        while (startIdx > 0
+               && wf[startIdx - 1]     > ampThr
+               && deriv[startIdx - 1]  > derivResetThr)
+            --startIdx;
+
+        // --- negotiate with previous region only if still overlapping ---
+        // If either threshold above already stopped the walk inside the previous
+        // region, no negotiation is needed. If the walk overshot (neither
+        // threshold fired before we hit the previous region), fall back to the
+        // valley-minimum split.
+        if (k > 0) {
+            int prevSeed   = merged[k - 1];
+            int prevEndIdx = rightEnds[k - 1];
+
+            if (startIdx <= prevEndIdx) {
+                // Neither threshold separated the pulses — find the local minimum
+                // in the inter-seed valley as the physical split point.
+                int   valleyMin = prevSeed;
+                float valleyVal = wf[prevSeed];
+                for (int s = prevSeed; s <= seed && s < N; ++s) {
+                    if (wf[s] < valleyVal) {
+                        valleyVal = wf[s];
+                        valleyMin = s;
+                    }
+                }
+
+                rightEnds[k - 1] = valleyMin - 1;
+                startIdx          = valleyMin;
+            }
+        }
+
+        // --- right pile-up cut with *next* seed (identical to before) ---
+        if (k + 1 < (int)merged.size()) {
+            int nextSeed  = merged[k + 1];
+            int nextStart = nextSeed;
+            while (nextStart > 0 && wf[nextStart - 1] > ampThr)
+                --nextStart;
+
+            if (nextStart <= endIdx) {
+                int   splitAt = seed;
+                float minVal  = wf[seed];
+                for (int s = seed; s < nextSeed && s < N; ++s) {
+                    if (wf[s] < minVal) { minVal = wf[s]; splitAt = s; }
+                }
+                endIdx = splitAt;
+                // Keep rightEnds consistent so the next iteration sees the update.
+                rightEnds[k] = endIdx;
+            }
+        }
+
+        if (endIdx - startIdx + 1 < minWidthSamples) continue;
+        regions.push_back({startIdx, endIdx});
+    }
+
+    return regions;
+}
+
+
+
 std::vector<PeakInfo> WaveformAnalyzer::analyzeWaveform(
     const std::vector<float>& wf,
     float noiseRMS,
@@ -480,24 +685,43 @@ std::vector<PeakInfo> WaveformAnalyzer::analyzeWaveform(
     const int N = (int)wf.size();
     const float dynThr = thresholdSigma * noiseRMS;
 
-    int i = 0;
-    while (i < N) {
-        // Skip until we find a sample above dynamic threshold
-        if (wf[i] <= dynThr) { ++i; continue; }
+    // ------------------------------------------------------------------
+    // Build the list of pulse regions to analyse.
+    // In derivative mode we use findPulseRegions() to separate piled-up
+    // pulses; otherwise we fall back to the classic threshold scan so
+    // behaviour is identical to the original for non-pileup data.
+    // ------------------------------------------------------------------
+    struct Region { int startIdx; int endIdx; };
+    std::vector<Region> pulseRegions;
 
-        // Found a sample above threshold: treat this as a candidate pulse start
-        int startIdx = i;
-
-        // Walk forward until waveform goes below threshold to locate the pulse window.
-        int j = i;
-        while (j + 1 < N && wf[j + 1] > dynThr) ++j;
-        int endIdx = j;
-
-        // Ensure width is meaningfully wide, otherwise skip past
-        if (endIdx - startIdx + 1 < minWidthSamples) {
-            i = endIdx + 1;
-            continue;
+    if (useDerivativeTrigger) {
+        for (auto& r : findPulseRegions(wf, noiseRMS))
+            pulseRegions.push_back({r.start, r.end});
+    } else {
+        // Legacy threshold scan: collect contiguous above-threshold windows
+        int i = 0;
+        while (i < N) {
+            if (wf[i] <= dynThr) { ++i; continue; }
+            int startIdx = i;
+            int j = i;
+            while (j + 1 < N && wf[j + 1] > dynThr) ++j;
+            pulseRegions.push_back({startIdx, j});
+            i = j + 1;
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Analyse each region with the existing peak-analysis logic.
+    // The only change vs the original code is that startIdx/endIdx now
+    // come from the region list above rather than from a threshold scan.
+    // All arithmetic below uses absolute sample indices into wf[].
+    // ------------------------------------------------------------------
+    for (auto& reg : pulseRegions) {
+        int startIdx = reg.startIdx;
+        int endIdx   = reg.endIdx;
+
+        // Width guard (same as original)
+        if (endIdx - startIdx + 1 < minWidthSamples) continue;
 
         // Within [startIdx..endIdx] find plateau-aware maximum sample (middle of plateau)
         int maxIdx = startIdx;
@@ -522,27 +746,23 @@ std::vector<PeakInfo> WaveformAnalyzer::analyzeWaveform(
         float baseline = 0.0f;
         if (local_baseline)
         {
+            // ── Collect the pre-pulse window ─────────────────────────────────────
+            // Use samples [startIdx - baselineLeftWindow, maxIdx), clamped to [0, N).
             int leftStart = std::max(0, startIdx - baselineLeftWindow);
             int leftCount = startIdx - leftStart;
+
             if (leftCount <= 0) {
-                // fallback: use very local min before peak or zero
                 baseline = 0.0f;
             } else {
-                // copy into temp and take median (robust against previous pulses)
-                std::vector<float> tmp;
-                tmp.reserve(leftCount);
-                for (int tt = leftStart; tt < startIdx; ++tt) tmp.push_back(wf[tt]);
-                std::nth_element(tmp.begin(), tmp.begin() + tmp.size()/2, tmp.end());
-                baseline = tmp[tmp.size()/2];
-                if (tmp.size() > 1 && tmp.size()%2 == 0) {
-                    // average with lower median for even count (not necessary but fine)
-                    auto it = std::max_element(tmp.begin(), tmp.begin() + tmp.size()/2);
-                    baseline = 0.5f * (baseline + *it);
+                // Use minimum of these points
+                float minVal = wf[leftStart];
+                for (int l = leftStart + 1; l < maxIdx; ++l) {
+                    if (wf[l] < minVal) minVal = wf[l];
                 }
+                baseline = minVal;
             }
         }
 
-        // Subtract baseline when computing peak amplitude and integrals
         // Detect saturation (flat top near adcMax)
         bool saturated = false;
         int satStart = -1, satEnd = -1;
@@ -593,10 +813,11 @@ std::vector<PeakInfo> WaveformAnalyzer::analyzeWaveform(
 
         // find x% timing on leading edge relative to baseline-subtracted peak amplitude
         float fraction = timingPercentMax; // e.g. 0.5
-        float target = fraction * peakAmpFit + baseline; // careful: function findxPercentofMax expects raw samples
-        // We'll implement a local leading-edge crossing search to be robust with baseline-subtraction.
+        float timing_amp = std::min(peakAmpFit, adcMax);  // Not toally ideal, want to tweak for baseline and pedestal probably
+        float target = fraction * timing_amp + baseline;
+        // float target = fraction * peakAmpFit + baseline;
         int leadIdx = maxIdx;
-        while (leadIdx > 0 && wf[leadIdx] > target) --leadIdx;
+        while (leadIdx > 0 && leadIdx >= startIdx && wf[leadIdx] > target) --leadIdx;
         // linear interp between leadIdx and leadIdx+1
         float timingSample = (float)leadIdx;
         if (leadIdx >= 0 && leadIdx+1 < N) {
@@ -611,12 +832,14 @@ std::vector<PeakInfo> WaveformAnalyzer::analyzeWaveform(
             timingSample = (float)maxIdx;
         }
 
+        // For the left/right threshold crossings we clamp within the region
+        // so that pile-up neighbours are not included in TOT / integral.
         // Walk left from maxIdx until waveform falls <= dynamic threshold (or touches baseline) to find left crossing.
         int leftCross = maxIdx;
-        while (leftCross > 0 && wf[leftCross] > dynThr) --leftCross;
-        // Walk right from maxIdx until waveform falls <= dynamic threshold
+        while (leftCross > startIdx && wf[leftCross] > dynThr) --leftCross;
+        // Walk right from maxIdx until waveform falls <= dynamic threshold, clamped at region end.
         int rightCross = maxIdx;
-        while (rightCross + 1 < N && wf[rightCross] > dynThr) ++rightCross;
+        while (rightCross + 1 <= endIdx && wf[rightCross] > dynThr) ++rightCross;
 
         // Compute integral and TOT using baseline-subtracted samples between leftCross+1 .. rightCross-1 (inclusive)
         float integral = 0.0f;
@@ -644,9 +867,6 @@ std::vector<PeakInfo> WaveformAnalyzer::analyzeWaveform(
         if (pi.peakAmplitude >= thresholdSigma * noiseRMS && (endIdx - startIdx + 1) >= minSamplesForPeak) {
             results.push_back(pi);
         }
-
-        // Advance i to after the rightCross to avoid merging
-        i = rightCross + 1;
     }
 
     return results;
