@@ -22,13 +22,13 @@ from time import sleep
 # CONFIG
 # =========================
 
-# BASE_SOFT = '/home/dylan/CLionProjects/mm_strip_reconstruction/cmake-build-debug/'
-# BASE_DATA = '/media/dylan/data/x17/cosmic_bench/'
+BASE_SOFT = '/home/dylan/CLionProjects/mm_strip_reconstruction/cmake-build-debug/'
+BASE_DATA = '/media/dylan/data/x17/cosmic_bench/'
 # BASE_DATA = '/media/dylan/data/x17/feb_beam/'
 # BASE_SOFT = '/home/mx17/CLionProjects/mm_strip_reconstruction/build/'
 # BASE_DATA = '/mnt/data/x17/beam_feb/'
-BASE_SOFT = '/afs/cern.ch/work/d/dneff/git/mm_strip_reconstruction/build/'
-BASE_DATA = '/eos/experiment/ntof/data/x17/feb_beam/'
+# BASE_SOFT = '/afs/cern.ch/work/d/dneff/git/mm_strip_reconstruction/build/'
+# BASE_DATA = '/eos/experiment/ntof/data/x17/feb_beam/'
 
 DECODE_EXECUTABLE = f'{BASE_SOFT}decoder/decode'
 WAVEFORM_ANALYSIS_EXECUTABLE = f'{BASE_SOFT}waveform_analysis/analyze_waveforms'
@@ -36,7 +36,7 @@ COMBINE_HITS_EXECUTABLE = f'{BASE_SOFT}feu_hit_combiner/combine_feus_hits'
 
 DECODE = True
 # DECODE = False
-REDECODE_PEDS = False
+REDECODE_PEDS = True
 ANALYZE = True
 COMBINE = True
 
@@ -47,16 +47,18 @@ DECODED_ROOT_DIR_NAME = 'decoded_root'
 HITS_DIR_NAME = 'hits_root'
 COMBINED_HITS_DIR_NAME = 'combined_hits_root'
 
-PEDESTAL_LOC = 'find'  # 'same' for same dir as data, 'abs' for absolute path, 'find' to search from .prg files
-PEDESTAL_DIR = f'{BASE_DATA}pedestals/'
+# PEDESTAL_LOC = 'find'  # 'same' for same dir as data, 'abs' for absolute path, 'find' to search from .prg files
+PEDESTAL_LOC = 'same'  # 'same' for same dir as data, 'abs' for absolute path, 'find' to search from .prg files
 # PEDESTAL_LOC = 'abs'  # 'same' for same dir as data, 'abs' for absolute path, 'find' to search from .prg files
+PEDESTAL_DIR = f'{BASE_DATA}pedestals/'
 # PEDESTAL_DIR = f'{BASE_DATA}pedestals/pedestals_02-02-26_10-49-02/pedestals/'
 
 
 def main():
-    runs_dir = f'{BASE_DATA}runs/'
-    # runs_dir = f'{BASE_DATA}tests/'
-    runs = ['run_19']
+    # runs_dir = f'{BASE_DATA}runs/'
+    # runs = ['run_19']
+    runs_dir = f'{BASE_DATA}det_1/'
+    runs = ['mx17_det1_1-27-26']
 
     if len(sys.argv) == 2:
         runs = [sys.argv[1]]
