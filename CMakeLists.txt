@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
-project(mm_strip_reconstruction)
+project(mm_dream_reconstruction)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

@@ -351,6 +351,9 @@ void WaveformAnalyzer::analyzeWaveforms() {
             float noiseRMS = pedestalMap.count(ch) ? pedestalMap[ch].rms : 3.0f;
             float max_adc_ped_sub = max_adc - (pedestalMap.count(ch) ? pedestalMap[ch].mean : 0.0f);
             auto peaks = analyzeWaveform(amps, noiseRMS, max_adc_ped_sub);
+            // if (plot_event_ch == std::make_pair(eventID, ch)) {
+                // plotWaveformWithPeaks(eventID, ch, amps, peaks);
+            // }
             for (auto& peak : peaks) {
 
                 // Correct samples for ftst. ftst in units of clock cycles
