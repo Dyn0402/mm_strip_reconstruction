@@ -6,6 +6,7 @@
 #define DREAM_DECODER_H
 
 #include <string>
+#include <cstdint>
 
 class DreamDecoder {
 public:

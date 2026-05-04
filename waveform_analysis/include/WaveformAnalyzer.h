@@ -68,16 +68,28 @@ private:
     // configuration
     bool commonNoiseSubtraction = false;  // if true, subtract common noise per event per channel
     bool allowMultiplePeaks = true;  // if false, only the highest peak per channel per event is kept
-    bool local_baseline = false;  // if true, use local baseline per peak; if false, use global pedestal mean
-    float thresholdSigma = 10.0;  // Number of pedestal RMS above which a hit is registered
+    bool local_baseline = true;  // if true, use local baseline per peak; if false, use global pedestal mean
+    float thresholdSigma = 5.0;  // Number of pedestal RMS above which a hit is registered
     int peakMergeDistance = 5;  // number of samples within which peaks are merged
 
     int minSamplesForPeak = 3;  // minimum number of samples above threshold to consider a peak
     int minWidthSamples = 2;  // minimum width in samples above threshold to consider a pulse
-    int baselineLeftWindow = 8;  // number of samples left of leading edge used to estimate baseline (robust)
+    int baselineLeftWindow = 4;  // number of samples left of leading edge used to estimate baseline (robust)
     float satFrac = 0.94;  // fraction of max_adc above which samples are considered saturated for peak saturation detection
 
     float zeroSupressedBaseline = 256.0f; // baseline level for zero-suppressed pedestal-subtracted waveforms
+
+    // --- Derivative-based pile-up separation ---
+    // Instead of requiring the waveform to return below threshold between pulses,
+    // we detect new pulses from significant positive-derivative (rising-edge) peaks.
+    bool useDerivativeTrigger = true;      // enable derivative-based pile-up separation
+    int  derivativeSmoothWidth = 3;        // half-width of box-car smoother applied before differencing (samples)
+    float derivThresholdSigma  = 1.0f;     // derivative peak must exceed this * noiseRMS/sample to be a new pulse
+    int  derivMergeDistance    = 4;        // rising-edge seeds closer than this (samples) are merged into one
+    float derivResetThr = 0.0f;            // tune as needed; add as a class member
+
+    float slopeSigma = 1.5f;   // For local baseline. Determine if new pulse sitting on previous. Sigma of slope compared to noise.
+    int valleyHW = 0;   // For local baseline. Averaging over valley. Number of points in valley
 
     // float timePerSample = 20.0;  // ns per sample. Sampling period
     float timePerSample = 60.0;  // ns per sample. Sampling period
@@ -111,6 +123,15 @@ private:
     float baseline,
     float& peakSample,
     float& peakAmpFit
+    ) const;
+
+    // Derivative-based pulse-region finder (pile-up aware).
+    // Returns a list of [startIdx, endIdx] pairs, one per detected pulse region.
+    // The downstream analyzeWaveform() is then called on each region independently.
+    struct PulseRegion { int start; int end; };
+    std::vector<PulseRegion> findPulseRegions(
+        const std::vector<float>& wf,
+        float noiseRMS
     ) const;
 
 };
