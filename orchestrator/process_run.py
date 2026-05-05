@@ -57,8 +57,8 @@ PEDESTAL_DIR = f'{BASE_DATA}pedestals/'
 def main():
     # runs_dir = f'{BASE_DATA}runs/'
     # runs = ['run_19']
-    runs_dir = f'{BASE_DATA}det_1/'
-    runs = ['mx17_det1_1-27-26']
+    runs_dir = f'{BASE_DATA}det_3/'
+    runs = ['mx17_det3_HV_Scan_5-5-26']
 
     if len(sys.argv) == 2:
         runs = [sys.argv[1]]
