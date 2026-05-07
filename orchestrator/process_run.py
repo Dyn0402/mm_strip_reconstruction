@@ -37,6 +37,7 @@ COMBINE_HITS_EXECUTABLE = f'{BASE_SOFT}feu_hit_combiner/combine_feus_hits'
 DECODE = True
 # DECODE = False
 REDECODE_PEDS = True
+# REDECODE_PEDS = False
 ANALYZE = True
 COMBINE = True
 
@@ -75,23 +76,37 @@ def main():
                 continue
 
             raw_dir = os.path.join(subrun_dir, RAW_DREAM_DIR_NAME)
-            if not os.path.exists(raw_dir):
-                print(f"No raw data in {raw_dir}, skipping")
-                continue
-
             decoded_dir = os.path.join(subrun_dir, DECODED_ROOT_DIR_NAME)
             hits_dir = os.path.join(subrun_dir, HITS_DIR_NAME)
             combined_hits_dir = os.path.join(subrun_dir, COMBINED_HITS_DIR_NAME)
 
+            # Determine whether we're working from raw fdfs or already-decoded roots
+            decoded_only = False
+            if not os.path.exists(raw_dir):
+                if DECODE:
+                    print(f"No raw data in {raw_dir}, skipping")
+                    continue
+                if not os.path.exists(decoded_dir):
+                    print(f"No raw data in {raw_dir} and no decoded data in {decoded_dir}, skipping")
+                    continue
+                decoded_only = True
+                print(f"No raw data found; working from decoded roots in {decoded_dir}")
+
             if ANALYZE:
                 make_dir_if_not_exists(hits_dir)
 
-            fdf_files = [f for f in os.listdir(raw_dir) if f.endswith('.fdf')]
-            data_fdfs = [f for f in fdf_files if '_datrun_' in f]
+            # data_root_stems: list of .root filenames (no path) for data files
+            if decoded_only:
+                data_root_stems = [f for f in os.listdir(decoded_dir)
+                                   if '_datrun_' in f and f.endswith('.root')]
+            else:
+                fdf_files = [f for f in os.listdir(raw_dir) if f.endswith('.fdf')]
+                data_fdfs = [f for f in fdf_files if '_datrun_' in f]
+                data_root_stems = [f.replace('.fdf', '.root') for f in data_fdfs]
 
             ped_fdf_path = ''
             if PEDESTAL_LOC == 'same':
-                ped_fdf_path = raw_dir
+                ped_fdf_path = decoded_dir if decoded_only else raw_dir
             elif PEDESTAL_LOC == 'abs':
                 ped_fdf_path = PEDESTAL_DIR
             elif PEDESTAL_LOC == 'find':
@@ -142,9 +157,9 @@ def main():
             if ANALYZE:
                 tasks = []
                 with ThreadPoolExecutor(max_workers=n_threads) as pool:
-                    for f in data_fdfs:
-                        root_path = os.path.join(decoded_dir, f.replace('.fdf', '.root'))
-                        hits_path = os.path.join(hits_dir, f.replace('.fdf', '_hits.root'))
+                    for f in data_root_stems:
+                        root_path = os.path.join(decoded_dir, f)
+                        hits_path = os.path.join(hits_dir, f.replace('.root', '_hits.root'))
 
                         tasks.append(pool.submit(
                             analyze_file,
@@ -159,7 +174,7 @@ def main():
 
             if COMBINE:
                 # Get file numbers from data files
-                file_nums = get_file_numbers_set(data_fdfs)
+                file_nums = get_file_numbers_set(data_root_stems)
                 print(f'File numbers to combine: {file_nums}')
 
                 tasks = []
