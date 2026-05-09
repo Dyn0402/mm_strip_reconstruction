@@ -24,9 +24,9 @@ from time import sleep
 
 # BASE_SOFT = '/home/dylan/CLionProjects/mm_strip_reconstruction/cmake-build-debug/'
 # BASE_DATA = '/media/dylan/data/x17/cosmic_bench/'
-BASE_DATA = '/media/dylan/data/x17/may_beam/'
+# BASE_DATA = '/media/dylan/data/x17/may_beam/'
 BASE_SOFT = '/home/mx17/CLionProjects/mm_strip_reconstruction/build/'
-# BASE_DATA = '/mnt/data/x17/beam_feb/'
+BASE_DATA = '/mnt/data/x17/beam_may/'
 # BASE_SOFT = '/afs/cern.ch/work/d/dneff/git/mm_strip_reconstruction/build/'
 # BASE_DATA = '/eos/experiment/ntof/data/x17/feb_beam/'
 
