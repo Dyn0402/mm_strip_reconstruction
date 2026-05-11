@@ -22,11 +22,11 @@ from time import sleep
 # CONFIG
 # =========================
 
-# BASE_SOFT = '/home/dylan/CLionProjects/mm_strip_reconstruction/cmake-build-debug/'
-# BASE_DATA = '/media/dylan/data/x17/cosmic_bench/'
+BASE_SOFT = '/home/dylan/CLionProjects/mm_strip_reconstruction/cmake-build-debug/'
+BASE_DATA = '/media/dylan/data/x17/cosmic_bench/'
 # BASE_DATA = '/media/dylan/data/x17/may_beam/'
-BASE_SOFT = '/home/mx17/CLionProjects/mm_strip_reconstruction/build/'
-BASE_DATA = '/mnt/data/x17/beam_may/'
+# BASE_SOFT = '/home/mx17/CLionProjects/mm_strip_reconstruction/build/'
+# BASE_DATA = '/mnt/data/x17/beam_may/'
 # BASE_SOFT = '/afs/cern.ch/work/d/dneff/git/mm_strip_reconstruction/build/'
 # BASE_DATA = '/eos/experiment/ntof/data/x17/feb_beam/'
 
@@ -56,10 +56,10 @@ PEDESTAL_DIR = f'{BASE_DATA}pedestals/'
 
 
 def main():
-    runs_dir = f'{BASE_DATA}runs/'
-    runs = ['run_19']
-    # runs_dir = f'{BASE_DATA}det_4/'
-    # runs = ['mx17_det3_HV_Scan_5-5-26']
+    # runs_dir = f'{BASE_DATA}runs/'
+    # runs = ['run_19']
+    runs_dir = f'{BASE_DATA}det_4/'
+    runs = ['mx17_det3_HV_Scan_5-5-26']
 
     if len(sys.argv) == 2:
         runs = [sys.argv[1]]

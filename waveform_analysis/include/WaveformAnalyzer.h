@@ -56,6 +56,7 @@ public:
 
     void setAllowMultiplePeaks(bool v) { allowMultiplePeaks = v; }
     void setThresholdSigma(float v)    { thresholdSigma = v; }
+    void setTimePerSample(float v)     { timePerSample = v; }
 
 private:
     std::string inputFileName;
@@ -92,7 +93,7 @@ private:
     int valleyHW = 0;   // For local baseline. Averaging over valley. Number of points in valley
 
     // float timePerSample = 20.0;  // ns per sample. Sampling period
-    float timePerSample = 60.0;  // ns per sample. Sampling period
+    float timePerSample = 60.0;  // ns per sample. Sampling period -- set from commandline
     float timePerFtst = 10.0;  // ns per fine timestamp unit. Fixed by DREAM clock of 100MHz --> 10 ns. Shift the timestamp by this amount.
     float timePerTimestamp = 10.0;  // ns Timestamp is in clock cycles of 10 ns
     float timingPercentMax = 0.3;  // fraction of peak amplitude at which timing is calculated
