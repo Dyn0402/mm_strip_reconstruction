@@ -27,7 +27,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 
 BASE_SOFT  = '/home/dylan/CLionProjects/mm_strip_reconstruction/cmake-build-debug'
 # SUBRUN_DIR = '/media/dylan/data/x17/may_beam/runs/run_67/hv_scan_drift_600_resist_530'
-SUBRUN_DIR = '/media/dylan/data/x17/may_beam/runs/run_74/run_6'
+SUBRUN_DIR = '/media/dylan/data/x17/may_beam/runs/run_74/run6'
 OUTPUT_DIR = '/media/dylan/data/x17/may_beam/qa_test'
 
 # ── Pipeline steps ────────────────────────────────────────────────────────
