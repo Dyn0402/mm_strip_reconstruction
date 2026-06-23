@@ -8,6 +8,13 @@
 #include <limits>
 #include <algorithm>
 
+// Defined below; used by computePedestals so the pedestal RMS is measured on the
+// same common-noise-subtracted waveforms the data path produces.
+std::unordered_map<int, std::vector<float>>
+applyCommonNoiseSubtraction(
+        const std::unordered_map<int, std::vector<float>>& waves,
+        const std::unordered_map<int, std::vector<int>>& samplesByCh);
+
 WaveformAnalyzer::WaveformAnalyzer(const std::string& inputFileName,
                                    const std::string& outputFileName,
                                    const std::string& pedestalFileName)
@@ -30,6 +37,7 @@ void WaveformAnalyzer::computePedestals() {
     else  // compute from pedestal file
     {
         std::cout << "Computing pedestals from " << pedestalFileName << "\n";
+        std::cout << "  RMS is measured AFTER common-noise subtraction; mean is the raw baseline.\n";
 
         TFile f(pedestalFileName.c_str(), "READ");
         if (!f.IsOpen()) {
@@ -51,32 +59,55 @@ void WaveformAnalyzer::computePedestals() {
         nt->SetBranchAddress("sample", &sample);
         nt->SetBranchAddress("amplitude", &amplitude);
 
-        std::unordered_map<int, PedestalData> accum;
+        // raw accumulator  -> per-channel MEAN (the DC baseline subtracted from data)
+        std::unordered_map<int, PedestalData> rawAccum;
+        // CNS-subtracted accumulator -> per-channel RMS (the true noise floor). The data
+        // path also applies common-noise subtraction, so the threshold (thresholdSigma*rms)
+        // must be calibrated on the CNS-subtracted noise, not the raw (common-mode-inflated) one.
+        std::unordered_map<int, PedestalData> cnsAccum;
 
         Long64_t nentries = nt->GetEntries();
         for (Long64_t i = 0; i < nentries; i++) {
             nt->GetEntry(i);
 
+            // group this event's raw samples by channel
+            std::unordered_map<int, std::vector<float>> waves;
+            std::unordered_map<int, std::vector<int>>   samplesByCh;
             for (size_t j = 0; j < channel->size(); j++) {
                 int ch = (*channel)[j];
-                float amp = (*amplitude)[j];
+                waves[ch].push_back((float)(*amplitude)[j]);
+                samplesByCh[ch].push_back((int)(*sample)[j]);
+            }
 
-                auto& pd = accum[ch];
-                pd.sum   += amp;
-                pd.sumsq += amp * amp;
-                pd.count++;
+            // raw accumulation -> mean
+            for (auto& kv : waves) {
+                auto& pd = rawAccum[kv.first];
+                for (float v : kv.second) { pd.sum += v; pd.count++; }
+            }
+
+            // common-noise subtraction (median across 64-channel blocks per sample),
+            // identical to the data path, then accumulate -> rms
+            auto cleaned = applyCommonNoiseSubtraction(waves, samplesByCh);
+            for (auto& kv : cleaned) {
+                auto& pd = cnsAccum[kv.first];
+                for (float v : kv.second) { pd.sum += v; pd.sumsq += v * v; pd.count++; }
             }
         }
 
-        // compute mean and RMS for each channel
+        // mean from raw, RMS from CNS-subtracted
         pedestalMap.clear();
-        for (auto& kv : accum) {
+        for (auto& kv : rawAccum) {
             int ch = kv.first;
-            const PedestalData& pd = kv.second;
+            const PedestalData& raw = kv.second;
+            float mean = raw.count ? (float)(raw.sum / raw.count) : 0.0f;
 
-            float mean = pd.sum / pd.count;
-            float rms  = std::sqrt(pd.sumsq / pd.count - mean * mean);
-
+            float rms = 0.0f;
+            auto it = cnsAccum.find(ch);
+            if (it != cnsAccum.end() && it->second.count) {
+                const PedestalData& c = it->second;
+                double cmean = c.sum / c.count;
+                rms = (float)std::sqrt(std::max(0.0, c.sumsq / c.count - cmean * cmean));
+            }
             pedestalMap[ch] = {mean, rms};
         }
         f.Close();

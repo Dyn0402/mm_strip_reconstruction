@@ -57,6 +57,7 @@ public:
     void setAllowMultiplePeaks(bool v) { allowMultiplePeaks = v; }
     void setThresholdSigma(float v)    { thresholdSigma = v; }
     void setTimePerSample(float v)     { timePerSample = v; }
+    void setCommonNoiseSubtraction(bool v) { commonNoiseSubtraction = v; }  // toggles CNS on DATA (pedestal RMS is always post-CNS)
 
 private:
     std::string inputFileName;
@@ -67,7 +68,7 @@ private:
     std::unordered_map<int, ChannelPedestal> pedestalMap;
 
     // configuration
-    bool commonNoiseSubtraction = false;  // if true, subtract common noise per event per channel
+    bool commonNoiseSubtraction = true;  // if true, subtract common noise per event per channel (Cosmic Bench default ON)
     bool allowMultiplePeaks = true;  // if false, only the highest peak per channel per event is kept
     bool local_baseline = true;  // if true, use local baseline per peak; if false, use global pedestal mean
     float thresholdSigma = 5.0;  // Number of pedestal RMS above which a hit is registered
