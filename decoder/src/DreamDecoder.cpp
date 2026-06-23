@@ -297,6 +297,7 @@ int DreamDecoder::run() {
                     print_data(data);
                 }
                 eof = read16(is, data);
+                if (eof) break;
             }
             if (eof) break;  // End of file
 
@@ -305,6 +306,7 @@ int DreamDecoder::run() {
                 cout << "Bad read, expected data header but got the following:" << endl;
                 print_data(data);
                 eof = read16(is, data);
+                if (eof) break;
             }
             if (eof) break;  // End of file
         }
