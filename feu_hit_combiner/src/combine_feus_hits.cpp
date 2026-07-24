@@ -71,6 +71,7 @@ int main(int argc, char** argv) {
     Bool_t saturated;
     Bool_t trunc_left;
     Bool_t trunc_right;
+    Float_t significance;
     Int_t feu;
 
     // --- Branches ---
@@ -91,6 +92,7 @@ int main(int argc, char** argv) {
     outTree.Branch("saturated", &saturated, "saturated/O");
     outTree.Branch("trunc_left", &trunc_left, "trunc_left/O");
     outTree.Branch("trunc_right", &trunc_right, "trunc_right/O");
+    outTree.Branch("significance", &significance, "significance/F");
     outTree.Branch("feu", &feu, "feu/I");
 
     // -------------------------
@@ -133,6 +135,9 @@ int main(int argc, char** argv) {
             inTree->SetBranchAddress("trunc_left", &trunc_left);
         if (inTree->GetBranch("trunc_right"))
             inTree->SetBranchAddress("trunc_right", &trunc_right);
+        significance = -1.0f;   // marker for pre-significance hits files
+        if (inTree->GetBranch("significance"))
+            inTree->SetBranchAddress("significance", &significance);
 
         feu = input.feu;
 

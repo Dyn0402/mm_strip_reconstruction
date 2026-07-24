@@ -26,7 +26,8 @@ struct PedestalData {
 
 struct ChannelPedestal {
     float mean = 0;
-    float rms  = 0;
+    float rms  = 0;      // post-CNS noise of the raw waveform
+    float rmsGate = 0;   // noise of the gate waveform (== rms unless matched filter on)
 };
 
 struct PeakInfo {
@@ -43,6 +44,7 @@ struct PeakInfo {
     bool truncLeft;          // pulse already above threshold at the first sample (rise not recorded)
     bool truncRight;         // pulse still above threshold at the last sample (tail clipped)
     float localBaseline;     // baseline used for this peak (same units as samples)
+    float significance;      // gate-waveform peak / gate noise sigma — cut on this offline to tighten
 };
 
 class WaveformAnalyzer {
@@ -59,6 +61,7 @@ public:
     void setThresholdSigma(float v)    { thresholdSigma = v; }
     void setTimePerSample(float v)     { timePerSample = v; }
     void setCommonNoiseSubtraction(bool v) { commonNoiseSubtraction = v; }  // toggles CNS on DATA (pedestal RMS is always post-CNS)
+    void setMatchedFilterWidth(int v)  { matchedFilterWidth = std::max(0, v); }  // 0 = off (gate on raw waveform)
 
 private:
     std::string inputFileName;
@@ -92,6 +95,19 @@ private:
     int gapMergeSamples = 2;            // sub-threshold gaps <= this many samples do not end a pulse
     float splitProminenceSigma = 4.0f;  // valley depth (units of noiseRMS) needed to split pile-up
 
+    // --- Low-gain / low-threshold mode (nTOF micro-TPC) ---
+    // When matchedFilterWidth > 0 the pulse GATE runs on a boxcar-smoothed
+    // copy of the waveform against the smoothed-noise sigma (measured in the
+    // same pedestal pass). Real pulses are many samples wide while the noise
+    // tail is dominated by narrow excursions, so at a fixed fake rate the
+    // smoothed gate recovers far more small pulses than lowering the raw
+    // threshold (measured on June det3: 3-sigma pulses 80% vs 54% at 3%
+    // fakes/waveform). Amplitude/baseline/timing/integral are still measured
+    // on the RAW waveform; crossings/TOT come from the gate waveform.
+    // Width ~ pulse rise duration: ~5 samples at 60 ns/sample, ~15 at 20 ns.
+    // 0 (default) = gate on the raw waveform: byte-identical to before.
+    int matchedFilterWidth = 0;
+
     float zeroSupressedBaseline = 256.0f; // baseline level for zero-suppressed pedestal-subtracted waveforms
 
     // float timePerSample = 20.0;  // ns per sample. Sampling period
@@ -103,9 +119,13 @@ private:
     int max_adc = 4095;  // maximum ADC value (saturation level)
 
     // helpers
+    // gate: the waveform pulse-finding runs on (aliases wf unless the matched
+    // filter is enabled); noiseGate: its per-channel noise sigma.
     std::vector<PeakInfo> analyzeWaveform(
     const std::vector<float>& wf,
+    const std::vector<float>& gate,
     float noiseRMS,
+    float noiseGate,
     float adcMax          // ADC saturation value for detection
     ) const;
 
@@ -124,8 +144,8 @@ private:
     // its neighbours), one region per detected pulse.
     struct PulseRegion { int start; int end; int loBound; int hiBound; };
     std::vector<PulseRegion> findPulseRegions(
-        const std::vector<float>& wf,
-        float noiseRMS
+        const std::vector<float>& gate,
+        float noiseGate
     ) const;
 
     static void splitRegionByValleys(

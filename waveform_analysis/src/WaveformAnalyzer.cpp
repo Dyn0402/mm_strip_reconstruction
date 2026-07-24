@@ -81,6 +81,26 @@ void applyCommonNoiseSubtraction(DenseEvent& ev)
     }
 }
 
+// Boxcar running mean of full width `width` (effective window is the odd
+// 2*(width/2)+1, clamped at the waveform edges). O(N) via a running sum.
+// Used as the matched-filter gate for low-gain mode; the SAME implementation
+// measures the gate-noise sigma in the pedestal pass, so thresholds are
+// consistent by construction.
+void boxcarSmooth(const std::vector<float>& in, int width, std::vector<float>& out)
+{
+    const int N = (int)in.size();
+    const int h = width / 2;
+    out.resize(N);
+    if (N == 0) return;
+    for (int i = 0; i < N; ++i) {
+        int lo = std::max(0, i - h);
+        int hi = std::min(N - 1, i + h);
+        float s = 0.0f;
+        for (int k = lo; k <= hi; ++k) s += in[k];
+        out[i] = s / float(hi - lo + 1);
+    }
+}
+
 } // namespace
 
 WaveformAnalyzer::WaveformAnalyzer(const std::string& inputFileName,
@@ -99,7 +119,7 @@ void WaveformAnalyzer::computePedestals() {
         // For zero-suppressed and pedestal subtracted data, the pedestals for each strip are set to 256.
         // If channels is not suppressed, it should be a hit, so set RMS to 1 ADC count
         for (int ch = 0; ch < 512; ch++) {
-            pedestalMap[ch] = {zeroSupressedBaseline, 1.0f};
+            pedestalMap[ch] = {zeroSupressedBaseline, 1.0f, 1.0f};
         }
     }
     else  // compute from pedestal file
@@ -133,6 +153,11 @@ void WaveformAnalyzer::computePedestals() {
         // path also applies common-noise subtraction, so the threshold (thresholdSigma*rms)
         // must be calibrated on the CNS-subtracted noise, not the raw (common-mode-inflated) one.
         std::unordered_map<int, PedestalData> cnsAccum;
+        // gate-waveform accumulator (matched-filter mode): sigma of the SMOOTHED
+        // noise, needed because the noise is time-correlated (sigma_smooth is
+        // ~0.8*sigma here, nowhere near the white-noise 1/sqrt(k)).
+        std::unordered_map<int, PedestalData> gateAccum;
+        std::vector<float> gateBuf;
 
         Long64_t nentries = nt->GetEntries();
         DenseEvent ev;
@@ -157,6 +182,11 @@ void WaveformAnalyzer::computePedestals() {
             for (int ch : ev.present) {
                 auto& pd = cnsAccum[ch];
                 for (float v : ev.wf[ch]) { pd.sum += v; pd.sumsq += v * v; pd.count++; }
+                if (matchedFilterWidth > 0) {
+                    boxcarSmooth(ev.wf[ch], matchedFilterWidth, gateBuf);
+                    auto& pg = gateAccum[ch];
+                    for (float v : gateBuf) { pg.sum += v; pg.sumsq += v * v; pg.count++; }
+                }
             }
         }
 
@@ -174,7 +204,17 @@ void WaveformAnalyzer::computePedestals() {
                 double cmean = c.sum / c.count;
                 rms = (float)std::sqrt(std::max(0.0, c.sumsq / c.count - cmean * cmean));
             }
-            pedestalMap[ch] = {mean, rms};
+            float rmsGate = rms;
+            if (matchedFilterWidth > 0) {
+                rmsGate = 0.0f;
+                auto ig = gateAccum.find(ch);
+                if (ig != gateAccum.end() && ig->second.count) {
+                    const PedestalData& g = ig->second;
+                    double gmean = g.sum / g.count;
+                    rmsGate = (float)std::sqrt(std::max(0.0, g.sumsq / g.count - gmean * gmean));
+                }
+            }
+            pedestalMap[ch] = {mean, rms, rmsGate};
         }
         f.Close();
     }
@@ -184,16 +224,18 @@ void WaveformAnalyzer::computePedestals() {
     TTree ped("pedestals", "pedestal values");
 
     UShort_t ch;
-    Float_t mean, rms;
+    Float_t mean, rms, rms_gate;
 
     ped.Branch("channel", &ch, "channel/s");
     ped.Branch("mean",    &mean, "mean/F");
     ped.Branch("rms",     &rms,  "rms/F");
+    ped.Branch("rms_gate", &rms_gate, "rms_gate/F");  // sigma of the gate waveform (== rms when matched filter off)
 
     for (auto& kv : pedestalMap) {
         ch = kv.first;
         mean = kv.second.mean;
         rms  = kv.second.rms;
+        rms_gate = kv.second.rmsGate;
         ped.Fill();
     }
 
@@ -305,6 +347,7 @@ void WaveformAnalyzer::analyzeWaveforms() {
     Bool_t    out_saturated;
     Bool_t    out_trunc_left;
     Bool_t    out_trunc_right;
+    Float_t   out_significance;
 
     hitTree.Branch("eventId", &out_eventID, "eventId/l");
     hitTree.Branch("trigger_timestamp_ns", &out_trigger_timestamp_ns, "trigger_timestamp_ns/l");
@@ -323,18 +366,26 @@ void WaveformAnalyzer::analyzeWaveforms() {
     hitTree.Branch("saturated", &out_saturated, "saturated/O");
     hitTree.Branch("trunc_left", &out_trunc_left, "trunc_left/O");
     hitTree.Branch("trunc_right", &out_trunc_right, "trunc_right/O");
+    // gate-peak / gate-noise-sigma: analyses that want stronger noise rejection
+    // than this processing's threshold cut on significance offline
+    hitTree.Branch("significance", &out_significance, "significance/F");
 
     // Flat per-channel pedestal lookup (subtractPedestal's per-sample hash
     // find was ~200M lookups per file). Missing channels: mean 0, RMS 3.0
     // fallback, matching the previous behaviour.
     std::vector<float> pedMean(DenseEvent::kMaxCh, 0.0f);
     std::vector<float> pedRms(DenseEvent::kMaxCh, 3.0f);
+    std::vector<float> pedRmsGate(DenseEvent::kMaxCh, 3.0f);
     for (auto& kv : pedestalMap) {
         if (kv.first >= 0 && kv.first < DenseEvent::kMaxCh) {
             pedMean[kv.first] = kv.second.mean;
             pedRms[kv.first]  = kv.second.rms;
+            pedRmsGate[kv.first] = (matchedFilterWidth > 0) ? kv.second.rmsGate : kv.second.rms;
         }
     }
+    if (matchedFilterWidth > 0)
+        std::cout << "Matched-filter gate ON: boxcar width " << matchedFilterWidth
+                  << " samples, threshold " << thresholdSigma << " x gate-noise sigma.\n";
 
     Long64_t nentries = nt->GetEntries();
     DenseEvent ev;
@@ -398,12 +449,18 @@ void WaveformAnalyzer::analyzeWaveforms() {
         }
 
         // analyze per channel (ascending channel order)
+        std::vector<float> gateBuf;
         for (int ch : ev.present) {
             std::vector<float>& amps = ev.wf[ch];
 
             float noiseRMS = pedRms[ch];
             float max_adc_ped_sub = max_adc - pedMean[ch];
-            auto peaks = analyzeWaveform(amps, noiseRMS, max_adc_ped_sub);
+            const std::vector<float>* gate = &amps;
+            if (matchedFilterWidth > 0) {
+                boxcarSmooth(amps, matchedFilterWidth, gateBuf);
+                gate = &gateBuf;
+            }
+            auto peaks = analyzeWaveform(amps, *gate, noiseRMS, pedRmsGate[ch], max_adc_ped_sub);
             for (auto& peak : peaks) {
 
                 // Correct samples for ftst. ftst in units of clock cycles
@@ -428,6 +485,7 @@ void WaveformAnalyzer::analyzeWaveforms() {
                 out_saturated      = peak.saturated;
                 out_trunc_left     = peak.truncLeft;
                 out_trunc_right    = peak.truncRight;
+                out_significance   = peak.significance;
 
                 hitTree.Fill();
             }
@@ -560,7 +618,9 @@ WaveformAnalyzer::findPulseRegions(
 
 std::vector<PeakInfo> WaveformAnalyzer::analyzeWaveform(
     const std::vector<float>& wf,
+    const std::vector<float>& gate,
     float noiseRMS,
+    float noiseGate,
     float adcMax          // ADC saturation value for detection
 ) const
 {
@@ -568,9 +628,10 @@ std::vector<PeakInfo> WaveformAnalyzer::analyzeWaveform(
     if (wf.size() < 3) return results;  // Waveform is too short
 
     const int N = (int)wf.size();
-    const float dynThr = thresholdSigma * noiseRMS;
+    const bool mf = matchedFilterWidth > 0;      // gate is the smoothed waveform
+    const float gateThr = thresholdSigma * noiseGate;
 
-    for (auto& reg : findPulseRegions(wf, noiseRMS)) {
+    for (auto& reg : findPulseRegions(gate, noiseGate)) {
         int startIdx = reg.start;
         int endIdx   = reg.end;
 
@@ -711,22 +772,23 @@ std::vector<PeakInfo> WaveformAnalyzer::analyzeWaveform(
             timingSample = (float)maxIdx;
         }
 
-        // Interpolated threshold crossings at the region boundaries.
-        // Left: crossing of dynThr between startIdx-1 (below) and startIdx (above),
+        // Interpolated threshold crossings at the region boundaries, measured on
+        // the GATE waveform (aliases the raw one unless the matched filter is on).
+        // Left: crossing of gateThr between startIdx-1 (below) and startIdx (above),
         // unless the pulse is truncated / abuts a neighbour (then the boundary itself).
         float leftCross = (float)startIdx;
-        if (startIdx > reg.loBound && startIdx > 0 && wf[startIdx - 1] <= dynThr) {
-            float yL = wf[startIdx - 1];
-            float yH = wf[startIdx];
+        if (startIdx > reg.loBound && startIdx > 0 && gate[startIdx - 1] <= gateThr) {
+            float yL = gate[startIdx - 1];
+            float yH = gate[startIdx];
             if (yH - yL > 1e-9f)
-                leftCross = (startIdx - 1) + (dynThr - yL) / (yH - yL);
+                leftCross = (startIdx - 1) + (gateThr - yL) / (yH - yL);
         }
         float rightCross = (float)endIdx;
-        if (endIdx < reg.hiBound && endIdx + 1 < N && wf[endIdx + 1] <= dynThr) {
-            float yH = wf[endIdx];
-            float yL = wf[endIdx + 1];
+        if (endIdx < reg.hiBound && endIdx + 1 < N && gate[endIdx + 1] <= gateThr) {
+            float yH = gate[endIdx];
+            float yL = gate[endIdx + 1];
             if (yH - yL > 1e-9f)
-                rightCross = endIdx + (yH - dynThr) / (yH - yL);
+                rightCross = endIdx + (yH - gateThr) / (yH - yL);
         }
         float tot = rightCross - leftCross;
 
@@ -758,8 +820,18 @@ std::vector<PeakInfo> WaveformAnalyzer::analyzeWaveform(
         pi.truncRight = truncRight;
         pi.localBaseline = baseline;
 
-        // Only accept if amplitude large enough relative to noise
-        if (pi.peakAmplitude >= thresholdSigma * noiseRMS && (endIdx - startIdx + 1) >= minSamplesForPeak) {
+        // significance = gate peak within the region, in gate-noise sigmas
+        float gmax = gate[startIdx];
+        for (int t = startIdx + 1; t <= endIdx; ++t) gmax = std::max(gmax, gate[t]);
+        pi.significance = (noiseGate > 0.0f) ? gmax / noiseGate : 0.0f;
+
+        // Acceptance. Normal mode: baseline-subtracted amplitude above threshold
+        // (unchanged). Matched-filter mode: the gate condition IS the detection
+        // criterion — requiring the raw amplitude to also clear thresholdSigma
+        // would undo the filter gain — so only the width guard applies.
+        bool widthOK = (endIdx - startIdx + 1) >= minSamplesForPeak;
+        bool ampOK = mf || (pi.peakAmplitude >= thresholdSigma * noiseRMS);
+        if (ampOK && widthOK) {
             results.push_back(pi);
         }
     }
