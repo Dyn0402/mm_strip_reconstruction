@@ -79,7 +79,8 @@ private:
 
     int minSamplesForPeak = 3;  // minimum number of samples above threshold to consider a peak
     int minWidthSamples = 2;  // minimum width in samples above threshold to consider a pulse
-    int baselineLeftWindow = 4;  // number of samples left of the pulse start used for the median local baseline
+    int baselineLeftWindow = 4;  // number of samples used for the median local baseline
+    int baselineGapSamples = 2;  // guard gap between the baseline window and the pulse start (skips the sub-threshold rise)
     float satFrac = 0.94;  // fraction of max_adc above which samples are considered saturated
     int minSatSamples = 2;  // consecutive samples above satFrac*adcMax required to flag saturation
     int satSlopeFitSamples = 3;  // samples per side used to fit the edge slopes of a saturated peak
@@ -102,12 +103,6 @@ private:
     int max_adc = 4095;  // maximum ADC value (saturation level)
 
     // helpers
-    float subtractPedestal(int ch, float ampl) const;
-
-    static std::unordered_map<int, std::vector<float>> fillZeroSuppressedSamples(
-                                                        const std::unordered_map<int, std::vector<float>>& waves,
-                                                        const std::unordered_map<int, std::vector<int>>& samplesByCh);
-
     std::vector<PeakInfo> analyzeWaveform(
     const std::vector<float>& wf,
     float noiseRMS,

@@ -8,10 +8,80 @@
 #include <limits>
 #include <algorithm>
 
-// Defined below; used by computePedestals so the pedestal RMS is measured on the
-// same common-noise-subtracted waveforms the data path produces.
-// Operates in place on DENSE waveforms (call fillZeroSuppressedSamples first).
-void applyCommonNoiseSubtraction(std::unordered_map<int, std::vector<float>>& waves);
+namespace {
+
+// Reusable per-event dense waveform buffer. Vectors keep their capacity across
+// events (clear() does not free), so after the first event the assembly loop is
+// allocation-free — the previous unordered_map-of-vectors rebuild dominated the
+// runtime (~50% of the total).
+struct DenseEvent {
+    static constexpr int kMaxCh = 512;
+    static constexpr int kMaxSample = 2048;   // sanity cap on malformed sample indices
+
+    std::vector<std::vector<float>> wf;
+    std::vector<int>  present;     // channel ids seen this event, sorted before analysis
+    std::vector<char> has;
+
+    DenseEvent() : wf(kMaxCh), has(kMaxCh, 0) { present.reserve(kMaxCh); }
+
+    void clear() {
+        for (int ch : present) { wf[ch].clear(); has[ch] = 0; }
+        present.clear();
+    }
+
+    // Record one sample; missing (zero-suppressed) samples stay 0 = baseline
+    // after pedestal subtraction, densifying inline.
+    void set(int ch, int s, float a) {
+        if (ch < 0 || ch >= kMaxCh || s < 0 || s >= kMaxSample) return;
+        if (!has[ch]) { has[ch] = 1; present.push_back(ch); }
+        auto& w = wf[ch];
+        if ((int)w.size() <= s) w.resize(s + 1, 0.0f);
+        w[s] = a;
+    }
+
+    void sortPresent() { std::sort(present.begin(), present.end()); }
+};
+
+// Common-noise subtraction across 64-channel blocks: per sample, subtract the
+// block median (same nth_element upper-middle convention as always). Used by
+// both the data path and computePedestals so the pedestal RMS is measured on
+// the same common-noise-subtracted waveforms the data path produces.
+void applyCommonNoiseSubtraction(DenseEvent& ev)
+{
+    static constexpr int blockSize = 64;
+    float vals[blockSize];
+
+    // walk the sorted present list block by block
+    size_t lo = 0;
+    while (lo < ev.present.size()) {
+        int blockStart = (ev.present[lo] / blockSize) * blockSize;
+        int blockEnd   = blockStart + blockSize;
+        size_t hi = lo;
+        int maxLen = 0;
+        while (hi < ev.present.size() && ev.present[hi] < blockEnd) {
+            maxLen = std::max(maxLen, (int)ev.wf[ev.present[hi]].size());
+            ++hi;
+        }
+
+        for (int s = 0; s < maxLen; s++) {
+            int n = 0;
+            for (size_t k = lo; k < hi; ++k) {
+                auto& w = ev.wf[ev.present[k]];
+                if (s < (int)w.size()) vals[n++] = w[s];
+            }
+            if (n == 0) continue;
+            std::nth_element(vals, vals + n / 2, vals + n);
+            float median = vals[n / 2];
+            for (size_t k = lo; k < hi; ++k) {
+                auto& w = ev.wf[ev.present[k]];
+                if (s < (int)w.size()) w[s] -= median;
+            }
+        }
+        lo = hi;
+    }
+}
+
+} // namespace
 
 WaveformAnalyzer::WaveformAnalyzer(const std::string& inputFileName,
                                    const std::string& outputFileName,
@@ -65,32 +135,28 @@ void WaveformAnalyzer::computePedestals() {
         std::unordered_map<int, PedestalData> cnsAccum;
 
         Long64_t nentries = nt->GetEntries();
+        DenseEvent ev;
         for (Long64_t i = 0; i < nentries; i++) {
             nt->GetEntry(i);
 
-            // group this event's raw samples by channel
-            std::unordered_map<int, std::vector<float>> waves;
-            std::unordered_map<int, std::vector<int>>   samplesByCh;
+            // assemble this event's raw samples (dense, reused buffer)
+            ev.clear();
             for (size_t j = 0; j < channel->size(); j++) {
                 int ch = (*channel)[j];
-                waves[ch].push_back((float)(*amplitude)[j]);
-                samplesByCh[ch].push_back((int)(*sample)[j]);
+                float a = (float)(*amplitude)[j];
+                ev.set(ch, (int)(*sample)[j], a);
+                // raw accumulation -> mean (recorded samples only)
+                auto& pd = rawAccum[ch];
+                pd.sum += a; pd.count++;
             }
+            ev.sortPresent();
 
-            // raw accumulation -> mean
-            for (auto& kv : waves) {
-                auto& pd = rawAccum[kv.first];
-                for (float v : kv.second) { pd.sum += v; pd.count++; }
-            }
-
-            // densify, then common-noise subtraction (median across 64-channel
-            // blocks per sample) — identical order to the data path — then
-            // accumulate -> rms
-            auto cleaned = fillZeroSuppressedSamples(waves, samplesByCh);
-            applyCommonNoiseSubtraction(cleaned);
-            for (auto& kv : cleaned) {
-                auto& pd = cnsAccum[kv.first];
-                for (float v : kv.second) { pd.sum += v; pd.sumsq += v * v; pd.count++; }
+            // common-noise subtraction (median across 64-channel blocks per
+            // sample) — identical order to the data path — then accumulate -> rms
+            applyCommonNoiseSubtraction(ev);
+            for (int ch : ev.present) {
+                auto& pd = cnsAccum[ch];
+                for (float v : ev.wf[ch]) { pd.sum += v; pd.sumsq += v * v; pd.count++; }
             }
         }
 
@@ -190,67 +256,6 @@ void WaveformAnalyzer::computePedestals() {
 }
 
 
-float WaveformAnalyzer::subtractPedestal(int ch, float ampl) const {
-    auto it = pedestalMap.find(ch);
-    if (it == pedestalMap.end()) return ampl;
-    return ampl - it->second.mean;
-}
-
-
-// ---------------------------------------------------------
-// Common-noise subtraction across 64-channel blocks.
-// Waveforms must already be dense (fillZeroSuppressedSamples).
-// ---------------------------------------------------------
-void applyCommonNoiseSubtraction(std::unordered_map<int, std::vector<float>>& waves)
-{
-    static constexpr int blockSize = 64;
-    static constexpr int maxChannels = 512;   // Max for DREAM FEU
-
-    for (int blockStart = 0; blockStart < maxChannels; blockStart += blockSize)
-    {
-        int blockEnd = blockStart + blockSize;
-
-        // Find maximum waveform length in this block
-        int maxLen = 0;
-        for (int ch = blockStart; ch < blockEnd; ch++) {
-            auto it = waves.find(ch);
-            if (it != waves.end())
-                maxLen = std::max(maxLen, (int)it->second.size());
-        }
-
-        // For each sample index, compute median
-        std::vector<float> vals;
-        for (int s = 0; s < maxLen; s++) {
-            vals.clear();
-            vals.reserve(blockSize);
-
-            // Collect sample across channels
-            for (int ch = blockStart; ch < blockEnd; ch++) {
-                auto it = waves.find(ch);
-                if (it == waves.end()) continue;
-                auto &wf = it->second;
-                if (s < (int)wf.size())
-                    vals.push_back(wf[s]);
-            }
-
-            if (vals.empty()) continue;
-
-            // Median
-            std::nth_element(vals.begin(), vals.begin() + vals.size()/2, vals.end());
-            float median = vals[vals.size()/2];
-
-            // Subtract from each waveform
-            for (int ch = blockStart; ch < blockEnd; ch++) {
-                auto it = waves.find(ch);
-                if (it == waves.end()) continue;
-                auto &wf = it->second;
-                if (s < (int)wf.size())
-                    wf[s] -= median;
-            }
-        }
-    }
-}
-
 
 void WaveformAnalyzer::analyzeWaveforms() {
     std::cout << "Analyzing waveforms from " << inputFileName << "\n";
@@ -319,48 +324,53 @@ void WaveformAnalyzer::analyzeWaveforms() {
     hitTree.Branch("trunc_left", &out_trunc_left, "trunc_left/O");
     hitTree.Branch("trunc_right", &out_trunc_right, "trunc_right/O");
 
+    // Flat per-channel pedestal lookup (subtractPedestal's per-sample hash
+    // find was ~200M lookups per file). Missing channels: mean 0, RMS 3.0
+    // fallback, matching the previous behaviour.
+    std::vector<float> pedMean(DenseEvent::kMaxCh, 0.0f);
+    std::vector<float> pedRms(DenseEvent::kMaxCh, 3.0f);
+    for (auto& kv : pedestalMap) {
+        if (kv.first >= 0 && kv.first < DenseEvent::kMaxCh) {
+            pedMean[kv.first] = kv.second.mean;
+            pedRms[kv.first]  = kv.second.rms;
+        }
+    }
+
     Long64_t nentries = nt->GetEntries();
     bool warnedSparseCNS = false;
+    DenseEvent ev;
 
     for (Long64_t i = 0; i < nentries; i++) {
         nt->GetEntry(i);
 
-        // group hits by channel
-        std::unordered_map<int, std::vector<float>> waves;
-        std::unordered_map<int, std::vector<int>> samplesByCh;
-
+        // Assemble the event into the reused dense buffer: pedestal-subtract
+        // recorded samples; missing zero-suppressed samples stay 0 = baseline
+        // after pedestal subtraction.
+        ev.clear();
         for (size_t j = 0; j < channel->size(); j++) {
-            int ch = (*channel)[j];
-            int s  = (*sample)[j];
-            float a = subtractPedestal(ch, (*amplitude)[j]);
-
-            waves[ch].push_back(a);
-            samplesByCh[ch].push_back(s);
+            unsigned int ch = (*channel)[j];
+            if (ch >= DenseEvent::kMaxCh) continue;
+            ev.set((int)ch, (int)(*sample)[j], (*amplitude)[j] - pedMean[ch]);
         }
-
-        // Densify FIRST (missing zero-suppressed samples become 0 = baseline
-        // after pedestal subtraction), then common-noise subtract the dense
-        // event. The reverse order dropped every sparse channel on ZS data.
-        waves = fillZeroSuppressedSamples(waves, samplesByCh);
+        ev.sortPresent();
 
         if (commonNoiseSubtraction) {
-            if (!warnedSparseCNS && !waves.empty() && waves.size() < 256) {
+            if (!warnedSparseCNS && !ev.present.empty() && ev.present.size() < 256) {
                 std::cerr << "Warning: common-noise subtraction enabled but only "
-                          << waves.size() << " channels present in event " << eventID
+                          << ev.present.size() << " channels present in event " << eventID
                           << " — data looks zero-suppressed; the block median will be"
                           << " signal-biased. Consider --cns 0.\n";
                 warnedSparseCNS = true;
             }
-            applyCommonNoiseSubtraction(waves);
+            applyCommonNoiseSubtraction(ev);
         }
 
-        // analyze per channel
-        for (auto& kv : waves) {
-            int ch = kv.first;
-            std::vector<float>& amps = kv.second;
+        // analyze per channel (ascending channel order)
+        for (int ch : ev.present) {
+            std::vector<float>& amps = ev.wf[ch];
 
-            float noiseRMS = pedestalMap.count(ch) ? pedestalMap[ch].rms : 3.0f;
-            float max_adc_ped_sub = max_adc - (pedestalMap.count(ch) ? pedestalMap[ch].mean : 0.0f);
+            float noiseRMS = pedRms[ch];
+            float max_adc_ped_sub = max_adc - pedMean[ch];
             auto peaks = analyzeWaveform(amps, noiseRMS, max_adc_ped_sub);
             for (auto& peak : peaks) {
 
@@ -394,86 +404,6 @@ void WaveformAnalyzer::analyzeWaveforms() {
 
     hitTree.Write();
     fout.Close();
-}
-
-
-/**
- * @brief Converts zero-suppressed (sparse) waveform data to regular (dense) data
- * by filling missing samples with a zero amplitude.
- *
- * The length of the final waveform for each channel is determined by the
- * maximum sample index present in the input data + 1.
- *
- * @param waves The input map of channel ID -> vector of amplitudes (ZS data).
- * @param samplesByCh The input map of channel ID -> vector of sample indices (ZS data).
- * @return A new std::unordered_map<int, std::vector<float>> with regular (dense) waveforms.
- */
-std::unordered_map<int, std::vector<float>> WaveformAnalyzer::fillZeroSuppressedSamples(
-    const std::unordered_map<int, std::vector<float>>& waves,
-    const std::unordered_map<int, std::vector<int>>& samplesByCh)
-{
-    // The new map to hold the dense, regular waveforms
-    std::unordered_map<int, std::vector<float>> regularWaves;
-
-    // Iterate over every channel present in the input data
-    for (const auto& pair : waves) {
-        int channelID = pair.first;
-        const std::vector<float>& zsAmplitudes = pair.second;
-
-        // Retrieve corresponding sample indices
-        auto samplesIt = samplesByCh.find(channelID);
-        if (samplesIt == samplesByCh.end()) {
-            std::cerr << "Warning: No sample indices found for channel " << channelID << ". Skipping." << std::endl;
-            regularWaves[channelID] = {};
-            continue;
-        }
-
-        const std::vector<int>& zsIndices = samplesIt->second;
-
-        // Basic validation
-        if (zsAmplitudes.size() != zsIndices.size()) {
-            std::cerr << "Error: Mismatch in size between amplitudes (" << zsAmplitudes.size()
-                      << ") and indices (" << zsIndices.size() << ") for channel " << channelID << ". Skipping." << std::endl;
-            regularWaves[channelID] = {};
-            continue;
-        }
-
-        // --- 1. Determine the maximum sample index to size the new waveform ---
-        int maxIndex = -1;
-        if (!zsIndices.empty()) {
-            // Finds the largest index recorded in the zero-suppressed data
-            maxIndex = *std::max_element(zsIndices.begin(), zsIndices.end());
-        }
-
-        if (maxIndex < 0) {
-            regularWaves[channelID] = {};
-            continue;
-        }
-
-        // The size of the regular waveform is maxIndex + 1 (0-based indexing)
-        size_t regularWaveSize = static_cast<size_t>(maxIndex) + 1;
-
-        // --- 2. Initialize the regular waveform with zeros (0.0f) ---
-        // This vector now represents samples [0, 1, ..., maxIndex], all set to 0.0f
-        std::vector<float> regularWave(regularWaveSize, 0.0f);
-
-        // --- 3. Fill in the recorded (non-zero-suppressed) values ---
-        for (size_t i = 0; i < zsAmplitudes.size(); ++i) {
-            int index = zsIndices[i];
-            float amplitude = zsAmplitudes[i];
-
-            // Place the recorded amplitude at its correct, absolute index
-            if (index >= 0 && static_cast<size_t>(index) < regularWaveSize) {
-                regularWave[index] = amplitude;
-            }
-        }
-
-        // --- 4. Store the new regular waveform ---
-        // std::move is used for efficiency to transfer ownership of the vector data.
-        regularWaves[channelID] = std::move(regularWave);
-    }
-
-    return regularWaves;
 }
 
 
@@ -636,16 +566,25 @@ std::vector<PeakInfo> WaveformAnalyzer::analyzeWaveform(
             k = runEnd + 1;
         }
 
-        // Local baseline: median of up to baselineLeftWindow samples immediately
-        // left of the pulse start (median is unbiased on noise; the previous
-        // minimum was biased low by ~0.5 sigma and latched onto undershoots).
+        // Local baseline: median of up to baselineLeftWindow samples left of the
+        // pulse start, skipping the baselineGapSamples immediately before it —
+        // those sit on the sub-threshold rise of slow pulses (measured: gap 2
+        // halves the +1.3 sigma rise contamination on slow micro-TPC risers).
+        // Median is unbiased on noise; the previous minimum was biased low by
+        // ~0.5 sigma and latched onto undershoots.
         float baseline = 0.0f;
         if (local_baseline)
         {
-            int bLo = std::max(reg.loBound, startIdx - baselineLeftWindow);
-            int nB  = startIdx - bLo;
+            int bHi = std::max(reg.loBound, startIdx - baselineGapSamples);
+            int bLo = std::max(reg.loBound, bHi - baselineLeftWindow);
+            if (bHi == bLo) {
+                // pulse starts too early for the guard gap — use the ungapped window
+                bHi = startIdx;
+                bLo = std::max(reg.loBound, bHi - baselineLeftWindow);
+            }
+            int nB  = bHi - bLo;
             if (nB > 0) {
-                std::vector<float> win(wf.begin() + bLo, wf.begin() + startIdx);
+                std::vector<float> win(wf.begin() + bLo, wf.begin() + bHi);
                 std::nth_element(win.begin(), win.begin() + win.size() / 2, win.end());
                 baseline = win[win.size() / 2];
                 if (win.size() % 2 == 0) {

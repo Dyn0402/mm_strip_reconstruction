@@ -1,6 +1,20 @@
 # mm_strip_reconstruction
 Reconstruction algorithms build specifically for Micromegas 2D strip detectors built at CEA Saclay.
 
+## Build
+
+Use the **Release** build for processing — it is ~12× faster than the debug
+build (which was unknowingly used for all processing before 2026-07-24):
+
+```
+cmake -S . -B cmake-build-release -DCMAKE_BUILD_TYPE=Release
+cmake --build cmake-build-release
+```
+
+`orchestrator/process_run.py` points at `cmake-build-release/`. Reference
+timing: one 13k-event non-ZS FEU file (32 samples × 512 ch) analyzes in ~12 s
+(was ~160 s debug); remaining time is ~⅓ ROOT decompression, ~⅓ CNS medians.
+
 ## Pipeline
 
 `decode` (raw fdf → `nt` sample tree) → `analyze_waveforms` (→ per-FEU `hits`
@@ -41,8 +55,10 @@ pulses):
    prominence cut.
 
 Per pulse: local baseline = **median** of up to `baselineLeftWindow` (4)
-pre-pulse samples (at a pile-up split boundary: the valley level, i.e. the
-previous pulse's tail); amplitude from a 3-point parabola (or, when ≥
+pre-pulse samples, skipping the `baselineGapSamples` (2) immediately before the
+pulse start — those sit on the sub-threshold rise of slow pulses (at a pile-up
+split boundary: the valley level, i.e. the previous pulse's tail); amplitude
+from a 3-point parabola (or, when ≥
 `minSatSamples` (2) consecutive samples sit near ADC max, from least-squares
 edge-slope extrapolation); timing at `timingPercentMax` (30 %) of the peak on
 the leading edge; threshold crossings interpolated (float); **integral over the
@@ -62,6 +78,14 @@ pulse already above threshold at the first sample (rise unrecorded — treat
 `time` as unreliable); `trunc_right` = still above threshold at the last sample
 (tail clipped — `integral`/`amplitude` are floor estimates). The combiner
 tolerates older hits files without the trunc branches (defaults false).
+
+Investigated and deliberately left unchanged (June det3 data, 2026-07-24, so
+this analysis isn't redone): the CNS `nth_element` upper-middle median
+convention (offset −0.1 ADC, negligible); MAD/robust-noise thresholds (the
+pedestal noise tails are genuine — P(>4·MAD) is ~275× Gaussian — so a
+lower robust threshold would roughly double the fake-waveform rate; the
+std-based RMS stays); pre-timing smoothing (only ~5 % jitter improvement in a
+shape+real-noise MC); the 3-point parabola amplitude (bias ≤2.5 %).
 
 TODO: expose the analyzer configuration (thresholds, split prominence, timing
 fraction, …) through the yaml `ConfigManager` in `common/` instead of

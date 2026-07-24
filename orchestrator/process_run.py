@@ -22,7 +22,7 @@ from time import sleep
 # CONFIG
 # =========================
 
-BASE_SOFT = '/home/dylan/CLionProjects/mm_strip_reconstruction/cmake-build-debug/'
+BASE_SOFT = '/home/dylan/CLionProjects/mm_strip_reconstruction/cmake-build-release/'  # Release build: ~12x faster than debug
 BASE_DATA = '/media/dylan/data/x17/cosmic_bench/'
 # BASE_DATA = '/media/dylan/data/x17/may_beam/'
 # BASE_SOFT = '/home/mx17/CLionProjects/mm_strip_reconstruction/build/'
