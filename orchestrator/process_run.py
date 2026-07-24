@@ -12,6 +12,7 @@ import os
 import sys
 import re
 import math
+import json
 from typing import Tuple, Optional, List, Dict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import tempfile
@@ -33,6 +34,19 @@ BASE_DATA = '/media/dylan/data/x17/cosmic_bench/'
 DECODE_EXECUTABLE = f'{BASE_SOFT}decoder/decode'
 WAVEFORM_ANALYSIS_EXECUTABLE = f'{BASE_SOFT}waveform_analysis/analyze_waveforms'
 COMBINE_HITS_EXECUTABLE = f'{BASE_SOFT}feu_hit_combiner/combine_feus_hits'
+
+# ---- Dream shaping (peaking) time -> matched-filter gate width ----
+# The analyzer's gate width should match the shaped pulse width. The Dream
+# peaking time is encoded in register-1 lines of the DAQ .cfg
+# ('Feu <id|*> Dream * 1 <w1> <w2> ...', code = (w2 >> 4) & 0xF). The DAQ
+# writes an exact copy of the used config (*.cfg_cpy) next to the raw data on
+# the nTOF layout; the cosmic bench only records the template path in
+# run_config.json, resolved against these local checkouts:
+DREAM_CFG_SEARCH_DIRS = [
+    '/home/dylan/PycharmProjects/Cosmic_Bench_DAQ_Control/dream_config/',
+]
+DREAM_PEAKING_NS = {0: 76, 1: 123, 2: 180, 3: 228, 4: 283, 5: 328, 6: 388, 7: 433, 8: 578}
+MF_WIDTH_OVER_PEAKING = 1.7   # gate window / peaking time (measured pulse FWHM ~= 1.7 x Tp)
 
 DECODE = True
 # DECODE = False
@@ -155,6 +169,15 @@ def main():
                         t.result()
 
             if ANALYZE:
+                # Gate width from the run's Dream shaping time when the cfg is
+                # findable; otherwise the analyzer's auto default applies.
+                sample_period_ns = run_sample_period_ns(run_dir)
+                dream_cfg = find_dream_cfg(raw_dir, run_dir)
+                peaking = parse_dream_peaking(dream_cfg) if dream_cfg else {}
+                if peaking:
+                    print(f"Dream peaking times from {dream_cfg}: {peaking} ns "
+                          f"(sample period {sample_period_ns} ns)")
+
                 tasks = []
                 with ThreadPoolExecutor(max_workers=n_threads) as pool:
                     for f in data_root_stems:
@@ -165,7 +188,9 @@ def main():
                             analyze_file,
                             root_path,
                             ped_fdf_path,
-                            hits_path
+                            hits_path,
+                            sample_period_ns,
+                            peaking
                         ))
 
                     for t in as_completed(tasks):
@@ -305,7 +330,72 @@ def decode_file(fdf_path: str, out_root_path: str):
     os.system(cmd)
 
 
-def analyze_file(root_path: str, pedestal_dir: str, hits_out_path: str):
+def parse_dream_peaking(cfg_path: str) -> Dict[str, int]:
+    """Per-FEU Dream peaking time (ns) from a Dream .cfg / .cfg_cpy.
+
+    Register-1 lines look like 'Feu <id|*> Dream <id|*> 1 <w1> <w2> ...';
+    the peaking-time code sits in bits [7:4] of the second word (the cfg's own
+    comment gives the code table). Later lines override earlier ones, so the
+    usual wildcard-then-specific layout resolves naturally.
+    """
+    peaking: Dict[str, int] = {}
+    try:
+        with open(cfg_path) as f:
+            for line in f:
+                tok = line.split('#')[0].split()
+                if len(tok) >= 7 and tok[0] == 'Feu' and tok[2] == 'Dream' and tok[4] == '1':
+                    try:
+                        code = (int(tok[6], 16) >> 4) & 0xF
+                    except ValueError:
+                        continue
+                    ns = DREAM_PEAKING_NS.get(code)
+                    if ns:
+                        peaking[tok[1]] = ns
+    except OSError:
+        return {}
+    return peaking
+
+
+def find_dream_cfg(raw_dir: str, run_dir: str) -> Optional[str]:
+    """Locate the Dream config for a run: the DAQ's exact *.cfg_cpy next to
+    the raw data if present (nTOF layout), else the template named in
+    run_config.json resolved against DREAM_CFG_SEARCH_DIRS."""
+    if os.path.isdir(raw_dir):
+        cpys = sorted(f for f in os.listdir(raw_dir) if f.endswith('.cfg_cpy'))
+        preferred = [f for f in cpys if 'datrun' in f] or cpys
+        if preferred:
+            return os.path.join(raw_dir, preferred[0])
+    rc_path = os.path.join(run_dir, 'run_config.json')
+    if os.path.exists(rc_path):
+        try:
+            with open(rc_path) as f:
+                tmpl = json.load(f).get('dream_daq_info', {}).get('daq_config_template_path')
+            if tmpl:
+                base = os.path.basename(tmpl)
+                for d in DREAM_CFG_SEARCH_DIRS:
+                    p = os.path.join(d, base)
+                    if os.path.exists(p):
+                        return p
+        except (OSError, ValueError):
+            pass
+    return None
+
+
+def run_sample_period_ns(run_dir: str) -> Optional[float]:
+    rc_path = os.path.join(run_dir, 'run_config.json')
+    if os.path.exists(rc_path):
+        try:
+            with open(rc_path) as f:
+                sp = json.load(f).get('dream_daq_info', {}).get('sample_period')
+            return float(sp) if sp else None
+        except (OSError, ValueError, TypeError):
+            pass
+    return None
+
+
+def analyze_file(root_path: str, pedestal_dir: str, hits_out_path: str,
+                 sample_period_ns: Optional[float] = None,
+                 peaking: Optional[Dict[str, int]] = None):
     file_num, feu_num = extract_file_numbers_tuple(os.path.basename(root_path))
 
     if pedestal_dir == 'same':
@@ -328,9 +418,20 @@ def analyze_file(root_path: str, pedestal_dir: str, hits_out_path: str):
     else:
         print(f"[analyze] No pedestal for FEU {feu_num}, continuing without")
 
+    extra = ''
+    if sample_period_ns:
+        extra += f" --tps {sample_period_ns:g}"
+    # Gate width from the run's measured shaping time; without a cfg the
+    # analyzer falls back to its own auto width (~300 ns / tps).
+    if peaking and sample_period_ns:
+        peak_ns = peaking.get(str(feu_num), peaking.get('*'))
+        if peak_ns:
+            mf = max(3, round(MF_WIDTH_OVER_PEAKING * peak_ns / sample_period_ns))
+            extra += f" --mf {mf}"
+
     make_dir_if_not_exists(os.path.dirname(hits_out_path))
-    cmd = f"{WAVEFORM_ANALYSIS_EXECUTABLE} {root_path} {hits_out_path} {ped_path}"
-    print(f"[analyze] {os.path.basename(root_path)}")
+    cmd = f"{WAVEFORM_ANALYSIS_EXECUTABLE} {root_path} {hits_out_path} {ped_path}{extra}"
+    print(f"[analyze] {os.path.basename(root_path)}{extra}")
     os.system(cmd)
 
 

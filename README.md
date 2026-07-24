@@ -97,6 +97,20 @@ pre-2026-07-24 raw-waveform gate. Auto-disabled on zero-suppressed data and
 when no pedestal file is given (gate sigma unmeasurable; boxcar would dilute
 the sparse ZS islands).
 
+**The gate only triggers/segments — every physics quantity except the
+crossings (amplitude, baseline, timing, integral, saturation) is measured on
+the raw, unsmoothed waveform.**
+
+`process_run.py` refines the auto width from the run's actual **Dream shaping
+time**: it locates the DAQ config (the exact `*.cfg_cpy` the DAQ writes next
+to the raw data on the nTOF layout, else the template named in
+`run_config.json` resolved against a local `Cosmic_Bench_DAQ_Control`
+checkout), decodes the per-FEU peaking time from Dream register 1 (code =
+bits [7:4] of the second word; table in `DREAM_PEAKING_NS`), and passes
+`--mf round(1.7 × Tp / tps)` per FEU (1.7 = measured pulse-FWHM/peaking).
+MX17 FEUs at 180 ns peaking give width 5 at 60 ns / 15 at 20 ns — identical
+to the auto default — while e.g. the M3 FEU (283 ns peaking) correctly gets 8.
+
 Rationale: real pulses are many samples wide while the noise tail is dominated
 by narrow excursions, so the smoothed gate beats the raw gate on BOTH axes.
 Measured on June det3 FEU08 at the same nominal 5-sigma threshold: fakes
