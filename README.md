@@ -34,8 +34,12 @@ default) → pulse finding → one `hits` entry per pulse.
 Pedestals: mean = raw baseline per channel; RMS = noise measured **after** CNS
 (the data path is CNS-subtracted, so thresholds must be calibrated on post-CNS
 noise). Without a pedestal file the data is assumed zero-suppressed
-(baseline 256, RMS 1). CNS on zero-suppressed (sparse) data is signal-biased —
-the analyzer warns once; prefer `--cns 0` there.
+(baseline 256, RMS 1). CNS on zero-suppressed (sparse) data is signal-biased
+(the block median *is* signal → ~8× hit loss), and ZS data is already
+common-mode corrected on the FEU, so the analyzer **auto-detects ZS input**
+(median distinct channels/event < 256) and **forces CNS off regardless of
+`--cns`** — a global CNS setting is therefore safe across mixed ZS/RAW
+reprocessing.
 
 ### Pulse finding (rewritten 2026-07-24)
 
