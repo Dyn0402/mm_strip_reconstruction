@@ -7,6 +7,7 @@
 #include <cmath>
 #include <limits>
 #include <algorithm>
+#include <unordered_set>
 
 // Defined below; used by computePedestals so the pedestal RMS is measured on the
 // same common-noise-subtracted waveforms the data path produces.
@@ -208,6 +209,18 @@ float WaveformAnalyzer::subtractPedestal(int ch, float ampl) const {
 // ---------------------------------------------------------
 // Common-noise subtraction across 64-channel blocks
 // ---------------------------------------------------------
+// TODO (2026-07-23): make the per-sample block estimator HIT-AWARE. Right now it takes the
+// plain median over all channels in the 64-ch block at each sample. That is robust while
+// real hits are sparse (<~50% of a block), but a genuinely coherent real cluster that fills
+// >half of one connector-block at one sample would bias its own common-mode estimate and be
+// partially subtracted away (grazing / in-plane tracks are the edge case). Refinement:
+// iterate — compute the median, flag channels deviating > k*sigma from it as candidate hits,
+// recompute the common mode from the remaining (unhit) channels only, and subtract that.
+// A one-pass sigma-clipped mean/median is usually enough. Verified worth doing on run_70
+// beam data (~/beam_july/analysis/waveform_cns_study): CNS is essential here — with it OFF
+// (the July processor default until now) the plane's ±300 ADC common-mode fired every
+// channel and made Micromegas "tracks" that were pure common-mode. Second-order vs turning
+// CNS on at all, so optional, but this is the known residual weakness of the estimator.
 std::unordered_map<int, std::vector<float>>
 applyCommonNoiseSubtraction(
         const std::unordered_map<int, std::vector<float>>& waves,
@@ -218,6 +231,7 @@ applyCommonNoiseSubtraction(
     // Get max sample index per channel
     std::unordered_map<int, int> maxSample;
     for (auto &kv : samplesByCh) {
+        if (kv.second.empty()) continue;   // max_element on an empty range is UB
         maxSample[kv.first] =
                 *std::max_element(kv.second.begin(), kv.second.end());
     }
@@ -228,13 +242,17 @@ applyCommonNoiseSubtraction(
 
     for (auto &kv : waves) {
         int ch = kv.first;
-        int maxS = maxSample.at(ch);      // safe because waves and samplesByCh match
+        auto maxIt = maxSample.find(ch);
+        if (maxIt == maxSample.end()) { aligned[ch] = {}; continue; }
+        int maxS = maxIt->second;
         aligned[ch].assign(maxS + 1, 0.0);
 
         auto &samps = samplesByCh.at(ch);
         auto &amps  = kv.second;
 
-        for (size_t k = 0; k < samps.size(); k++)
+        // Note: a repeated sampleID (the decoder occasionally emits one — see the
+        // duplicate-sample events in run_67..run_72) resolves last-write-wins here.
+        for (size_t k = 0; k < samps.size() && k < amps.size(); k++)
             aligned[ch][samps[k]] = amps[k];
     }
 
@@ -352,6 +370,51 @@ void WaveformAnalyzer::analyzeWaveforms() {
 
     Long64_t nentries = nt->GetEntries();
 
+    // ---- Zero-suppression guard (decide once per file) ----
+    // Common-noise subtraction is only valid on a FULL detector frame. Raw (non-ZS)
+    // readout writes every one of the ~512 channels (8 DREAM chips x 64) on every
+    // trigger, so the per-64-channel-block median is a genuine common-mode estimate
+    // (most channels in a block are unhit). Zero-suppressed readout keeps only the
+    // channels/samples above threshold, so only a handful of channels appear per event
+    // (measured: zs_singles ~40, win_sparse ~3). On ZS data every surviving channel is
+    // by definition a hit, so the block median IS signal and CNS subtracts real pulses
+    // (measured 8x hit loss on zs_singles: 11533 -> 1455). ZS data is also already
+    // common-mode/baseline corrected upstream on the FEU. So if this file looks
+    // zero-suppressed, force CNS OFF regardless of the --cns flag.
+    bool applyCNS = commonNoiseSubtraction;
+    if (commonNoiseSubtraction) {
+        const Long64_t probeN = std::min<Long64_t>(nentries, 200);
+        std::vector<int> chanCounts;
+        chanCounts.reserve(probeN);
+        for (Long64_t i = 0; i < probeN; i++) {
+            nt->GetEntry(i);
+            std::unordered_set<int> uniq(channel->begin(), channel->end());
+            if (!uniq.empty())
+                chanCounts.push_back((int)uniq.size());
+        }
+        int medianChans = 0;
+        if (!chanCounts.empty()) {
+            std::nth_element(chanCounts.begin(),
+                             chanCounts.begin() + chanCounts.size() / 2,
+                             chanCounts.end());
+            medianChans = chanCounts[chanCounts.size() / 2];
+        }
+        // Raw frame is ~512 channels; ZS is tens. 256 sits well between the two and
+        // tolerates several dead DREAM chips on a raw run without misclassifying it.
+        const bool isZeroSuppressed = (medianChans < 256);
+        if (isZeroSuppressed) {
+            applyCNS = false;
+            std::cout << "  [cns] median " << medianChans << " channels/event"
+                      << " -> zero-suppressed input; --cns 1 ignored (already"
+                      << " common-mode corrected upstream; block median would"
+                      << " subtract signal here)." << std::endl;
+        } else {
+            std::cout << "  [cns] median " << medianChans << " channels/event"
+                      << " -> full raw frame; applying common-noise subtraction."
+                      << std::endl;
+        }
+    }
+
     for (Long64_t i = 0; i < nentries; i++) {
         nt->GetEntry(i);
 
@@ -367,12 +430,21 @@ void WaveformAnalyzer::analyzeWaveforms() {
             waves[ch].push_back(a);
             samplesByCh[ch].push_back(s);
         }
-        if(commonNoiseSubtraction) {
+        // Densify: 'waves' must end up as regular waveforms indexed by absolute sample
+        // number. applyCommonNoiseSubtraction ALREADY returns that dense layout (it aligns
+        // internally before taking the block median), so the two are alternatives, never a
+        // sequence. Chaining them (the bug until 2026-07-24) fed dense amplitudes back into
+        // fillZeroSuppressedSamples together with the still-sparse index list; the size check
+        // there then rejected the channel and dropped it silently. It only stayed invisible
+        // while every channel was fully sampled and contiguous (RAW n32), where the sizes
+        // happen to agree and the second pass is the identity. It bit on zero-suppressed
+        // data (~75% of channel-instances in the zs_* runs) and on the rare events where the
+        // decoder emits repeated sampleIDs (all 512 channels of that event lost).
+        if(applyCNS) {
             waves = applyCommonNoiseSubtraction(waves, samplesByCh);
+        } else {
+            waves = fillZeroSuppressedSamples(waves, samplesByCh);
         }
-
-        // This line updates the 'waves' map to contain the dense, regular waveforms.
-        waves = fillZeroSuppressedSamples(waves, samplesByCh);
 
         // analyze per channel
         for (auto& kv : waves) {
