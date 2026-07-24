@@ -177,6 +177,10 @@ def main():
                 if peaking:
                     print(f"Dream peaking times from {dream_cfg}: {peaking} ns "
                           f"(sample period {sample_period_ns} ns)")
+                zs_baseline = run_zs_baseline(run_dir)
+                if zs_baseline:
+                    print("Run is zero-suppressed with on-FEU pedestal "
+                          "subtraction: passing --zs-baseline 1")
 
                 tasks = []
                 with ThreadPoolExecutor(max_workers=n_threads) as pool:
@@ -190,7 +194,8 @@ def main():
                             ped_fdf_path,
                             hits_path,
                             sample_period_ns,
-                            peaking
+                            peaking,
+                            zs_baseline
                         ))
 
                     for t in as_completed(tasks):
@@ -393,9 +398,27 @@ def run_sample_period_ns(run_dir: str) -> Optional[float]:
     return None
 
 
+def run_zs_baseline(run_dir: str) -> bool:
+    """True when the run took zero-suppressed data with ON-FEU pedestal
+    subtraction (dream_daq_info in run_config.json): the decoded waveforms are
+    then re-centred at 256 and analyze_waveforms needs --zs-baseline 1 (the
+    pedestal file's per-channel means would be the wrong baseline; its RMS is
+    still used for thresholds). Ported from the banco P2 fork, 2026-07-24."""
+    rc_path = os.path.join(run_dir, 'run_config.json')
+    if os.path.exists(rc_path):
+        try:
+            with open(rc_path) as f:
+                daq = json.load(f).get('dream_daq_info', {})
+            return bool(daq.get('zero_suppress')) and bool(daq.get('pedestal_subtraction'))
+        except (OSError, ValueError, TypeError):
+            pass
+    return False
+
+
 def analyze_file(root_path: str, pedestal_dir: str, hits_out_path: str,
                  sample_period_ns: Optional[float] = None,
-                 peaking: Optional[Dict[str, int]] = None):
+                 peaking: Optional[Dict[str, int]] = None,
+                 zs_baseline: bool = False):
     file_num, feu_num = extract_file_numbers_tuple(os.path.basename(root_path))
 
     if pedestal_dir == 'same':
@@ -428,6 +451,8 @@ def analyze_file(root_path: str, pedestal_dir: str, hits_out_path: str,
         if peak_ns:
             mf = max(3, round(MF_WIDTH_OVER_PEAKING * peak_ns / sample_period_ns))
             extra += f" --mf {mf}"
+    if zs_baseline:
+        extra += " --zs-baseline 1"
 
     make_dir_if_not_exists(os.path.dirname(hits_out_path))
     cmd = f"{WAVEFORM_ANALYSIS_EXECUTABLE} {root_path} {hits_out_path} {ped_path}{extra}"

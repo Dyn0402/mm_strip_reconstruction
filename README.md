@@ -25,7 +25,7 @@ tree) → `combine_feus_hits` (→ combined hits with `feu` branch) →
 
 ```
 analyze_waveforms <input.root> [output.root] [pedestal.root] [--tps <ns>] [--cns <0|1>]
-                  [--thr <sigma>] [--mf <samples>]
+                  [--thr <sigma>] [--mf <samples>] [--zs-baseline <0|1>]
 ```
 
 Per event: pedestal subtraction → densify zero-suppressed samples → optional
@@ -41,6 +41,19 @@ common-mode corrected on the FEU, so the analyzer **auto-detects ZS input**
 (median distinct channels/event < 256) and **forces CNS off regardless of
 `--cns`** — a global CNS setting is therefore safe across mixed ZS/RAW
 reprocessing.
+
+`--zs-baseline 1` (ported from the banco P2 fork, 2026-07-24): for
+zero-suppressed data whose pedestals were already subtracted **on the FEU**
+(waveforms re-centred at 256), subtract the uniform 256 baseline instead of the
+pedestal file's per-channel raw means — those differ from 256 by tens of ADC
+per channel and would shift every threshold and amplitude by that much. The
+pedestal file is still used for the per-channel noise RMS, so thresholds stay
+per-channel 5 σ instead of the no-pedestal fallback's fixed 5 ADC. ZS data
+*without* on-FEU pedestal subtraction sits on the raw per-channel baselines,
+where the pedestal means ARE the right baseline — so the flag must follow the
+DAQ configuration: `process_run.py` (and the DAQ watcher) set it automatically
+when `run_config.json` has `dream_daq_info.zero_suppress` **and**
+`dream_daq_info.pedestal_subtraction` both true.
 
 ### Pulse finding (rewritten 2026-07-24)
 

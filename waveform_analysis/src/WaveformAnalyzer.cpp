@@ -387,6 +387,18 @@ void WaveformAnalyzer::analyzeWaveforms() {
             pedRmsGate[kv.first] = (resolvedMfWidth() > 0) ? kv.second.rmsGate : kv.second.rms;
         }
     }
+    // ZS + on-FEU pedestal subtraction: the FEU already removed the per-channel
+    // pedestal and re-centred every waveform at 256, so the per-channel raw
+    // means from the pedestal file are the WRONG baseline here (off by tens of
+    // ADC per channel). Keep the pedestal-file RMS for thresholds; override
+    // only the means.
+    if (zsBaseline) {
+        std::fill(pedMean.begin(), pedMean.end(), zeroSupressedBaseline);
+        std::cout << "ZS-baseline mode: data baseline forced to "
+                  << zeroSupressedBaseline
+                  << " (on-FEU pedestal subtraction); pedestal file used for "
+                     "noise RMS only.\n";
+    }
 
     Long64_t nentries = nt->GetEntries();
     DenseEvent ev;

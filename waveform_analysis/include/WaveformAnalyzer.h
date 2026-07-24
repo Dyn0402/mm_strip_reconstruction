@@ -61,6 +61,13 @@ public:
     void setThresholdSigma(float v)    { thresholdSigma = v; }
     void setTimePerSample(float v)     { timePerSample = v; }
     void setCommonNoiseSubtraction(bool v) { commonNoiseSubtraction = v; }  // toggles CNS on DATA (pedestal RMS is always post-CNS)
+    // For zero-suppressed data whose pedestals were already subtracted ON THE
+    // FEU (waveforms re-centred at 256): subtract the uniform 256 baseline
+    // instead of the pedestal file's per-channel RAW means (which differ from
+    // 256 by tens of ADC and would shift every threshold/amplitude by that
+    // much). The pedestal file is still used for the per-channel noise RMS.
+    // (Ported from the banco P2 fork, 2026-07-24.)
+    void setZsBaseline(bool v)         { zsBaseline = v; }
     void setMatchedFilterWidth(int v)  { matchedFilterWidth = v; }  // -1 = auto (default), 0 = off (raw gate), >0 = samples
 
 private:
@@ -76,6 +83,7 @@ private:
     // compile-time constants — needed once one binary serves both the bench
     // micro-TPC detectors and P2. Documented, deferred.
     bool commonNoiseSubtraction = true;  // if true, subtract common noise per event per channel (Cosmic Bench default ON)
+    bool zsBaseline = false;  // if true, data baseline = zeroSupressedBaseline (256), not the pedestal-file means
     bool allowMultiplePeaks = true;  // if false, only the LARGEST peak per channel per event is kept
     bool local_baseline = true;  // if true, use local baseline per peak; if false, use global pedestal mean
     float thresholdSigma = 5.0;  // Number of pedestal RMS above which a hit is registered
