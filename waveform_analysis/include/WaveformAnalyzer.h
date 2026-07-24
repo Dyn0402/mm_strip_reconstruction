@@ -61,7 +61,7 @@ public:
     void setThresholdSigma(float v)    { thresholdSigma = v; }
     void setTimePerSample(float v)     { timePerSample = v; }
     void setCommonNoiseSubtraction(bool v) { commonNoiseSubtraction = v; }  // toggles CNS on DATA (pedestal RMS is always post-CNS)
-    void setMatchedFilterWidth(int v)  { matchedFilterWidth = std::max(0, v); }  // 0 = off (gate on raw waveform)
+    void setMatchedFilterWidth(int v)  { matchedFilterWidth = v; }  // -1 = auto (default), 0 = off (raw gate), >0 = samples
 
 private:
     std::string inputFileName;
@@ -95,18 +95,24 @@ private:
     int gapMergeSamples = 2;            // sub-threshold gaps <= this many samples do not end a pulse
     float splitProminenceSigma = 4.0f;  // valley depth (units of noiseRMS) needed to split pile-up
 
-    // --- Low-gain / low-threshold mode (nTOF micro-TPC) ---
-    // When matchedFilterWidth > 0 the pulse GATE runs on a boxcar-smoothed
-    // copy of the waveform against the smoothed-noise sigma (measured in the
-    // same pedestal pass). Real pulses are many samples wide while the noise
-    // tail is dominated by narrow excursions, so at a fixed fake rate the
-    // smoothed gate recovers far more small pulses than lowering the raw
-    // threshold (measured on June det3: 3-sigma pulses 80% vs 54% at 3%
-    // fakes/waveform). Amplitude/baseline/timing/integral are still measured
-    // on the RAW waveform; crossings/TOT come from the gate waveform.
-    // Width ~ pulse rise duration: ~5 samples at 60 ns/sample, ~15 at 20 ns.
-    // 0 (default) = gate on the raw waveform: byte-identical to before.
-    int matchedFilterWidth = 0;
+    // --- Matched-filter gate (DEFAULT since 2026-07-24) ---
+    // The pulse GATE runs on a boxcar-smoothed copy of the waveform against
+    // the smoothed-noise sigma (measured in the same pedestal pass). Real
+    // pulses are many samples wide (DREAM shaper ~300 ns) while the noise tail
+    // is dominated by narrow excursions, so at a fixed fake rate the smoothed
+    // gate beats the raw-threshold gate at every amplitude (June det3
+    // injection study: at ~1% fakes/waveform, 4-sigma pulses 42% vs 10%;
+    // and at the same nominal 5-sigma threshold it has FEWER fakes, 0.7% vs
+    // 1.05%). Amplitude/baseline/timing/integral are still measured on the
+    // RAW waveform; regions/crossings/TOT come from the gate waveform.
+    // matchedFilterWidth: -1 = AUTO (width = matchedFilterNs / timePerSample:
+    // 5 samples at 60 ns, 15 at 20 ns), 0 = off (raw gate, pre-2026-07-24
+    // behaviour), >0 = explicit width in samples. Auto-disabled on
+    // zero-suppressed data / missing pedestal file (gate sigma unmeasurable,
+    // boxcar would dilute the sparse islands).
+    // Mode split is by THRESHOLD only: default 5.0; nTOF low-gain ~3.0.
+    int matchedFilterWidth = -1;
+    float matchedFilterNs = 300.0f;  // auto gate width in ns (~DREAM shaper pulse width)
 
     float zeroSupressedBaseline = 256.0f; // baseline level for zero-suppressed pedestal-subtracted waveforms
 
@@ -119,14 +125,25 @@ private:
     int max_adc = 4095;  // maximum ADC value (saturation level)
 
     // helpers
+    // Resolved matched-filter width for this run: auto/off/explicit, in samples.
+    // 0 when the gate runs on the raw waveform (ZS data / no pedestal / --mf 0).
+    int resolvedMfWidth() const {
+        if (!hasPedestal) return 0;                      // gate sigma unmeasurable
+        if (matchedFilterWidth >= 0) return matchedFilterWidth;
+        return std::max(3, (int)std::lround(matchedFilterNs / timePerSample));
+    }
+
     // gate: the waveform pulse-finding runs on (aliases wf unless the matched
     // filter is enabled); noiseGate: its per-channel noise sigma.
+    // gateIsFiltered: acceptance uses the gate criterion instead of the raw
+    // amplitude cut when true.
     std::vector<PeakInfo> analyzeWaveform(
     const std::vector<float>& wf,
     const std::vector<float>& gate,
     float noiseRMS,
     float noiseGate,
-    float adcMax          // ADC saturation value for detection
+    float adcMax,          // ADC saturation value for detection
+    bool gateIsFiltered
     ) const;
 
     void saturatedLinearExtrapolation(

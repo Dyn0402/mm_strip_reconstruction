@@ -84,32 +84,44 @@ pulse already above threshold at the first sample (rise unrecorded — treat
 (tail clipped — `integral`/`amplitude` are floor estimates). The combiner
 tolerates older hits files without the trunc branches (defaults false).
 
-### Low-gain / low-threshold mode (nTOF micro-TPC)
+### Matched-filter gate (DEFAULT) and the low-gain nTOF mode
 
-For runs at very low gain, `--thr <sigma>` lowers the gate threshold (default
-5.0) and `--mf <samples>` enables a **matched-filter gate**: pulse finding
-(gate, gap-merge, valley split, crossings/TOT) runs on a boxcar-smoothed copy
-of the waveform against the *smoothed*-noise sigma, measured per channel in the
-same pedestal pass (`rms_gate` branch of the pedestals tree). Amplitude,
-baseline, timing and integral are still measured on the raw waveform.
+Pulse finding (gate, gap-merge, valley split, crossings/TOT) runs **by
+default** on a boxcar-smoothed copy of the waveform against the
+*smoothed*-noise sigma, measured per channel in the same pedestal pass
+(`rms_gate` branch of the pedestals tree). Amplitude, baseline, timing and
+integral are still measured on the raw waveform. The gate width is **auto**:
+~300 ns (the DREAM shaper pulse width) divided by `--tps` → 5 samples at
+60 ns, 15 at 20 ns; override with `--mf <samples>`, or `--mf 0` for the
+pre-2026-07-24 raw-waveform gate. Auto-disabled on zero-suppressed data and
+when no pedestal file is given (gate sigma unmeasurable; boxcar would dilute
+the sparse ZS islands).
+
 Rationale: real pulses are many samples wide while the noise tail is dominated
-by narrow excursions, so at a fixed fake rate the smoothed gate recovers far
-more small pulses than simply lowering the raw threshold — measured on June
-det3 data by injecting the measured pulse shape into real pedestal noise:
-3-sigma pulses are detected 80 % vs 54 % (raw) at 3 % fakes/waveform, 42 % vs
-10 % at 1 % (4-sigma). The noise is time-correlated, so the smoothing gain is
-NOT 1/sqrt(k) (boxcar-5 sigma ratio ~0.8); zero-mean/derivative kernels were
-tested and lose (the pulse and the correlated noise overlap spectrally).
+by narrow excursions, so the smoothed gate beats the raw gate on BOTH axes.
+Measured on June det3 FEU08 at the same nominal 5-sigma threshold: fakes
+0.67 % vs 1.05 % per waveform (pedestal data), recovery of real >5-sigma-raw
+candidates up in every bin (5–7σ 40 % vs 11 %, 20–50σ 97 % vs 92 %, >50σ 99 %
+vs 96 %), CPU +9 %. Injection truth (measured pulse shape into real pedestal
+noise): at ~1 % fakes, 4-sigma pulses 42 % vs 10 %. The noise is
+time-correlated, so the smoothing gain is NOT 1/sqrt(k) (boxcar-5 sigma ratio
+~0.8); zero-mean/derivative kernels were tested and lose (the pulse and the
+correlated noise overlap spectrally).
 
-Recommended operating point: `--thr 3 --mf 5` at 60 ns/sample (`--mf 15` at
-20 ns; match the width to the pulse rise duration). Cost: ~2 % fake waveforms
-per channel (≈10 isolated fake strips/event on a 512-channel FEU) — downstream
-clustering/time-coincidence must absorb that, and on normal-gain data the
-added sub-5-sigma hits are noise-dominated (only worth it at low gain). Every
-hit carries a `significance` branch (gate peak / gate noise sigma), so a single
+**Mode split is by threshold only**: default `--thr 5`; **low-gain nTOF
+micro-TPC: `--thr 3`** (~2 % fake waveforms/channel ≈ 10 isolated fake
+strips/event on a 512-channel FEU — downstream clustering/time-coincidence
+must absorb that; on normal-gain data the added sub-5-sigma hits are
+noise-dominated, so only run low at low gain). Every hit carries a
+`significance` branch (gate peak / gate noise sigma), so a single
 low-threshold processing can serve strict analyses too: cutting
-`significance >= 5` offline recovers the high-rejection hit set. Default flags
-(`--thr 5`, no `--mf`) are byte-identical to the standard analysis.
+`significance >= 5` offline recovers the high-rejection hit set.
+
+Note: with the gate smoothed, `left_sample`/`right_sample`/
+`time_over_threshold` describe the smoothed waveform's threshold crossings
+(median TOT is ~2 samples wider than the raw-gate convention). Hit sets
+produced before/after this default change are not directly comparable —
+reprocess consistently within a campaign.
 
 Investigated and deliberately left unchanged (June det3 data, 2026-07-24, so
 this analysis isn't redone): the CNS `nth_element` upper-middle median

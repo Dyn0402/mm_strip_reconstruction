@@ -92,12 +92,15 @@ void boxcarSmooth(const std::vector<float>& in, int width, std::vector<float>& o
     const int h = width / 2;
     out.resize(N);
     if (N == 0) return;
+    // prefix sums: cum[i] = sum of in[0..i-1]
+    static thread_local std::vector<double> cum;
+    cum.resize(N + 1);
+    cum[0] = 0.0;
+    for (int i = 0; i < N; ++i) cum[i + 1] = cum[i] + in[i];
     for (int i = 0; i < N; ++i) {
         int lo = std::max(0, i - h);
         int hi = std::min(N - 1, i + h);
-        float s = 0.0f;
-        for (int k = lo; k <= hi; ++k) s += in[k];
-        out[i] = s / float(hi - lo + 1);
+        out[i] = (float)((cum[hi + 1] - cum[lo]) / double(hi - lo + 1));
     }
 }
 
@@ -161,6 +164,7 @@ void WaveformAnalyzer::computePedestals() {
 
         Long64_t nentries = nt->GetEntries();
         DenseEvent ev;
+        const int mfW = resolvedMfWidth();
         for (Long64_t i = 0; i < nentries; i++) {
             nt->GetEntry(i);
 
@@ -182,8 +186,8 @@ void WaveformAnalyzer::computePedestals() {
             for (int ch : ev.present) {
                 auto& pd = cnsAccum[ch];
                 for (float v : ev.wf[ch]) { pd.sum += v; pd.sumsq += v * v; pd.count++; }
-                if (matchedFilterWidth > 0) {
-                    boxcarSmooth(ev.wf[ch], matchedFilterWidth, gateBuf);
+                if (mfW > 0) {
+                    boxcarSmooth(ev.wf[ch], mfW, gateBuf);
                     auto& pg = gateAccum[ch];
                     for (float v : gateBuf) { pg.sum += v; pg.sumsq += v * v; pg.count++; }
                 }
@@ -205,7 +209,7 @@ void WaveformAnalyzer::computePedestals() {
                 rms = (float)std::sqrt(std::max(0.0, c.sumsq / c.count - cmean * cmean));
             }
             float rmsGate = rms;
-            if (matchedFilterWidth > 0) {
+            if (mfW > 0) {
                 rmsGate = 0.0f;
                 auto ig = gateAccum.find(ch);
                 if (ig != gateAccum.end() && ig->second.count) {
@@ -380,12 +384,9 @@ void WaveformAnalyzer::analyzeWaveforms() {
         if (kv.first >= 0 && kv.first < DenseEvent::kMaxCh) {
             pedMean[kv.first] = kv.second.mean;
             pedRms[kv.first]  = kv.second.rms;
-            pedRmsGate[kv.first] = (matchedFilterWidth > 0) ? kv.second.rmsGate : kv.second.rms;
+            pedRmsGate[kv.first] = (resolvedMfWidth() > 0) ? kv.second.rmsGate : kv.second.rms;
         }
     }
-    if (matchedFilterWidth > 0)
-        std::cout << "Matched-filter gate ON: boxcar width " << matchedFilterWidth
-                  << " samples, threshold " << thresholdSigma << " x gate-noise sigma.\n";
 
     Long64_t nentries = nt->GetEntries();
     DenseEvent ev;
@@ -399,6 +400,7 @@ void WaveformAnalyzer::analyzeWaveforms() {
     // so a global common_noise_subtraction setting is safe across mixed ZS/RAW
     // reprocessing.
     bool effectiveCNS = commonNoiseSubtraction;
+    bool dataLooksZS = false;
     if (commonNoiseSubtraction) {
         Long64_t nscan = std::min<Long64_t>(nentries, 200);
         std::vector<int> presentCounts;
@@ -427,8 +429,25 @@ void WaveformAnalyzer::analyzeWaveforms() {
                          "zero-suppressed (median " << medianPresent
                       << " channels/event) — forcing CNS OFF (the block median "
                          "would be signal-biased on sparse data).\n";
+            dataLooksZS = true;
         }
     }
+
+    // Matched-filter gate width for this file. Auto-off on ZS data: the boxcar
+    // would dilute the sparse sample islands and the ZS stream is already
+    // firmware-thresholded.
+    int mfW = resolvedMfWidth();
+    if (dataLooksZS && mfW > 0) {
+        std::cout << "Matched-filter gate disabled: data looks zero-suppressed.\n";
+        mfW = 0;
+    }
+    if (mfW > 0)
+        std::cout << "Matched-filter gate: boxcar width " << mfW
+                  << " samples (" << mfW * timePerSample << " ns), threshold "
+                  << thresholdSigma << " x gate-noise sigma.\n";
+    else
+        std::cout << "Gate on raw waveform, threshold " << thresholdSigma
+                  << " x noise sigma.\n";
 
     for (Long64_t i = 0; i < nentries; i++) {
         nt->GetEntry(i);
@@ -456,11 +475,13 @@ void WaveformAnalyzer::analyzeWaveforms() {
             float noiseRMS = pedRms[ch];
             float max_adc_ped_sub = max_adc - pedMean[ch];
             const std::vector<float>* gate = &amps;
-            if (matchedFilterWidth > 0) {
-                boxcarSmooth(amps, matchedFilterWidth, gateBuf);
+            float noiseGate = noiseRMS;
+            if (mfW > 0) {
+                boxcarSmooth(amps, mfW, gateBuf);
                 gate = &gateBuf;
+                noiseGate = pedRmsGate[ch];
             }
-            auto peaks = analyzeWaveform(amps, *gate, noiseRMS, pedRmsGate[ch], max_adc_ped_sub);
+            auto peaks = analyzeWaveform(amps, *gate, noiseRMS, noiseGate, max_adc_ped_sub, mfW > 0);
             for (auto& peak : peaks) {
 
                 // Correct samples for ftst. ftst in units of clock cycles
@@ -621,14 +642,15 @@ std::vector<PeakInfo> WaveformAnalyzer::analyzeWaveform(
     const std::vector<float>& gate,
     float noiseRMS,
     float noiseGate,
-    float adcMax          // ADC saturation value for detection
+    float adcMax,          // ADC saturation value for detection
+    bool gateIsFiltered
 ) const
 {
     std::vector<PeakInfo> results;
     if (wf.size() < 3) return results;  // Waveform is too short
 
     const int N = (int)wf.size();
-    const bool mf = matchedFilterWidth > 0;      // gate is the smoothed waveform
+    const bool mf = gateIsFiltered;              // gate is the smoothed waveform
     const float gateThr = thresholdSigma * noiseGate;
 
     for (auto& reg : findPulseRegions(gate, noiseGate)) {

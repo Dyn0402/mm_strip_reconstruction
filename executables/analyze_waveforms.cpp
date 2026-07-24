@@ -14,11 +14,12 @@ int main(int argc, char **argv) {
     {
         std::cerr << "Usage: " << argv[0] << " <input.root> [output.root] [pedestal.root]"
                      " [--tps <ns>] [--cns <0|1>] [--thr <sigma>] [--mf <samples>]\n"
-                     "  --thr  gate threshold in noise sigmas (default 5.0)\n"
-                     "  --mf   matched-filter (boxcar) gate width in samples; 0 = off (default).\n"
-                     "         Low-gain nTOF micro-TPC mode: --thr 3 --mf 5 at 60 ns/sample\n"
-                     "         (--mf 15 at 20 ns); cut the hits 'significance' branch offline\n"
-                     "         to tighten. Default flags reproduce the standard analysis." << std::endl;
+                     "  --thr  gate threshold in noise sigmas (default 5.0; nTOF low-gain ~3)\n"
+                     "  --mf   matched-filter (boxcar) gate width in samples.\n"
+                     "         Default: AUTO (~300 ns / tps: 5 at 60 ns, 15 at 20 ns);\n"
+                     "         0 = raw-waveform gate (pre-2026-07-24 behaviour).\n"
+                     "         Auto-disabled on zero-suppressed data / missing pedestal.\n"
+                     "         Cut the hits 'significance' branch offline to tighten." << std::endl;
         return 1;
     }
     std::string inputFile = argv[1];
@@ -27,7 +28,7 @@ int main(int argc, char **argv) {
     float timePerSample = -1.0f;  // negative means use default
     int commonNoiseSub = -1;      // -1 means leave the compiled default (ON)
     float thresholdSigma = -1.0f; // negative means use default (5.0)
-    int mfWidth = -1;             // negative means use default (0 = off)
+    int mfWidth = -999;           // sentinel: leave compiled default (auto)
     if (argc >= 3) outputFile = argv[2];
     if (argc >= 4) pedestalFile = argv[3];
     for (int i = 4; i < argc - 1; ++i) {
@@ -50,7 +51,7 @@ int main(int argc, char **argv) {
     if (timePerSample > 0.0f) wf.setTimePerSample(timePerSample);
     if (commonNoiseSub >= 0) wf.setCommonNoiseSubtraction(commonNoiseSub != 0);
     if (thresholdSigma > 0.0f) wf.setThresholdSigma(thresholdSigma);
-    if (mfWidth >= 0) wf.setMatchedFilterWidth(mfWidth);
+    if (mfWidth != -999) wf.setMatchedFilterWidth(mfWidth);
     wf.run();
     return 0;
 }
