@@ -337,8 +337,47 @@ void WaveformAnalyzer::analyzeWaveforms() {
     }
 
     Long64_t nentries = nt->GetEntries();
-    bool warnedSparseCNS = false;
     DenseEvent ev;
+
+    // Zero-suppression detection. CNS's per-64-channel-block median is only a
+    // common-mode estimate on a full detector frame. On ZS data every surviving
+    // channel is above threshold, so the median IS signal and CNS subtracts real
+    // pulses (~8x hit loss); ZS data is also already common-mode corrected
+    // upstream on the FEU. Decide once per file from the median distinct-channel
+    // count (RAW frame ~512, ZS tens) and force CNS off regardless of the flag,
+    // so a global common_noise_subtraction setting is safe across mixed ZS/RAW
+    // reprocessing.
+    bool effectiveCNS = commonNoiseSubtraction;
+    if (commonNoiseSubtraction) {
+        Long64_t nscan = std::min<Long64_t>(nentries, 200);
+        std::vector<int> presentCounts;
+        presentCounts.reserve((size_t)nscan);
+        for (Long64_t i = 0; i < nscan; i++) {
+            nt->GetEntry(i);
+            ev.clear();
+            for (size_t j = 0; j < channel->size(); j++) {
+                unsigned int ch = (*channel)[j];
+                if (ch >= DenseEvent::kMaxCh) continue;
+                if (!ev.has[ch]) { ev.has[ch] = 1; ev.present.push_back(ch); }
+            }
+            presentCounts.push_back((int)ev.present.size());
+        }
+        ev.clear();
+        int medianPresent = 0;
+        if (!presentCounts.empty()) {
+            std::nth_element(presentCounts.begin(),
+                             presentCounts.begin() + presentCounts.size() / 2,
+                             presentCounts.end());
+            medianPresent = presentCounts[presentCounts.size() / 2];
+        }
+        if (medianPresent < 256) {
+            effectiveCNS = false;
+            std::cout << "Common-noise subtraction requested but data looks "
+                         "zero-suppressed (median " << medianPresent
+                      << " channels/event) — forcing CNS OFF (the block median "
+                         "would be signal-biased on sparse data).\n";
+        }
+    }
 
     for (Long64_t i = 0; i < nentries; i++) {
         nt->GetEntry(i);
@@ -354,14 +393,7 @@ void WaveformAnalyzer::analyzeWaveforms() {
         }
         ev.sortPresent();
 
-        if (commonNoiseSubtraction) {
-            if (!warnedSparseCNS && !ev.present.empty() && ev.present.size() < 256) {
-                std::cerr << "Warning: common-noise subtraction enabled but only "
-                          << ev.present.size() << " channels present in event " << eventID
-                          << " — data looks zero-suppressed; the block median will be"
-                          << " signal-biased. Consider --cns 0.\n";
-                warnedSparseCNS = true;
-            }
+        if (effectiveCNS) {
             applyCommonNoiseSubtraction(ev);
         }
 
