@@ -87,6 +87,17 @@ are included (the old between-crossings sum kept only ~half the charge of a
 
 ### `hits` tree branches
 
+> **`time` is not a drift-time measurement (2026-07-28).** On resistive-strip
+> detectors each strip's waveform is its own charge plus delayed, dispersed
+> copies of its neighbours' (~29 % at tau ~ 47 ns to +-1 strip on MX17), so the
+> per-strip `time` is an *aggregate*. Fitting strip position vs `time` gives a
+> ladder compressed 20-30 % — ~4 deg too steep, with the cluster fanning away
+> from the true track with depth — and this is independent of how the time is
+> extracted (rising edge, CFD, matched filter all show it). Use the hits tree
+> for cluster finding, amplitudes, efficiency and QA; reconstruct geometry from
+> the waveforms. Evidence and the replacement (forward-model fit):
+> `nTof_x17/RECONSTRUCTION_BASIS.md`.
+
 `eventId, trigger_timestamp_ns, channel, amplitude, time, time_of_max, sample,
 max_sample, local_baseline, local_max, left_sample, right_sample,
 time_over_threshold, integral, saturated, trunc_left, trunc_right,
