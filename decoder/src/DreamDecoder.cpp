@@ -14,6 +14,7 @@
 
 #include "TFile.h"
 #include "TTree.h"
+#include "TH1D.h"
 #include "RtypesCore.h"
 
 #include <arpa/inet.h>
@@ -98,6 +99,21 @@ int DreamDecoder::run() {
     vector<uint16_t> channel;
     vector<uint16_t> amplitude;
 
+    // Loss accounting.  A DREAM FEU under RAW bandwidth pressure drops whole
+    // sample-group packets silently; when the dropped packet carries the
+    // end-of-event marker the next event used to accumulate into the same nt
+    // entry.  Events are therefore also closed on an eventID change in the FEU
+    // header (exact: every frame carries its eventID) and at EOF, and every
+    // output records which mechanism closed each entry plus the per-sample
+    // acceptance a mean waveform must be divided by.
+    ULong64_t st_events = 0, st_closed_eoe = 0, st_closed_eventid = 0,
+              st_closed_eof = 0;
+    ULong64_t ev_min = ~0ULL, ev_max = 0;
+    int max_sample_seen = -1;
+    std::array<bool, 256> ev_sample_seen{};      // samples present, this event
+    std::array<ULong64_t, 256> sample_present{}; // events containing sample s
+    bool file_is_zs = true;
+
     TFile fout(outputFileName.data(), "recreate");
     TTree nt("nt","nt");
     nt.SetDirectory(&fout);
@@ -108,6 +124,20 @@ int DreamDecoder::run() {
     nt.Branch("sample",          &sample);
     nt.Branch("channel",         &channel);
     nt.Branch("amplitude",       &amplitude);
+
+    auto close_event = [&](ULong64_t &mech_counter) {
+        nt.Fill();
+        st_events++;
+        mech_counter++;
+        if (eventID < ev_min) ev_min = eventID;
+        if (eventID > ev_max) ev_max = eventID;
+        for (int s = 0; s <= max_sample_seen; s++)
+            if (ev_sample_seen[s]) sample_present[s]++;
+        ev_sample_seen.fill(false);
+        channel.clear();
+        sample.clear();
+        amplitude.clear();
+    };
 
     // Prime first word (original code had data initialized to 0 and logic relied on read16 at various points)
     // To mimic behavior exactly, read first word here:
@@ -127,11 +157,18 @@ int DreamDecoder::run() {
             isEvent = true; // we are in an event
             isFT = false;
             isZS = get_zs_mode(data);  // true if zero supressed data, false otherwise
+            file_is_zs = isZS;
 
-            timestamp = 0;
-            eventID   = 0;
-            FeuID     = 0;
-            sampleID  = 0;
+            // Parse the header into locals first: if it announces a new
+            // eventID while data is still buffered, the buffered event's own
+            // header values must stamp the outgoing entry before they are
+            // overwritten (the end-of-event marker that should have closed it
+            // was in a dropped packet).
+            ULong64_t new_timestamp = 0;
+            ULong64_t new_eventID   = 0;
+            UInt_t    new_FeuID     = 0;
+            UShort_t  new_sampleID  = 0;
+            UShort_t  new_ftst      = 0;
             iFeuH = 0;
 
             if (debug) cout << "Start FEU header..." << endl;
@@ -141,38 +178,50 @@ int DreamDecoder::run() {
                     print_data(data);
                 }
                 if( iFeuH == 0 ){
-                    FeuID = get_Feu_ID( data );
+                    new_FeuID = get_Feu_ID( data );
 //          sampleID = data & 0x800;
-                    sampleID = (data & 0x800) >> 3;  // Shift 11th bit down to bit 8
+                    new_sampleID = (data & 0x800) >> 3;  // Shift 11th bit down to bit 8
 //          sampleID = 0;
                 }
                 else if( iFeuH == 1 ){
-                    eventID =  get_Event_ID( data );
+                    new_eventID =  get_Event_ID( data );
                 }
                 else if( iFeuH == 2 ){
-                    timestamp =  get_timestamp( data );
+                    new_timestamp =  get_timestamp( data );
                 }
                 else if( iFeuH == 3 ) {
-                    sampleID += get_sample_ID( data );
-                    fine_timestamp = get_fine_timestamp( data );
+                    new_sampleID += get_sample_ID( data );
+                    new_ftst = get_fine_timestamp( data );
                 }
                 else if( iFeuH == 4 ){
-                    eventID  += (uint64_t)get_Event_ID( data )<<12;
+                    new_eventID  += (uint64_t)get_Event_ID( data )<<12;
                 }
                 else if( iFeuH == 5 ){
-                    timestamp +=  (uint64_t)get_timestamp( data )<<12;
+                    new_timestamp +=  (uint64_t)get_timestamp( data )<<12;
                 }
                 else if( iFeuH == 6 ){
-                    timestamp +=  (uint64_t)get_timestamp( data )<<24;
+                    new_timestamp +=  (uint64_t)get_timestamp( data )<<24;
                 }
                 else if( iFeuH == 7 ){
 //          timestamp +=  (uint64_t)get_timestamp( data )<<36;
-                    timestamp += (uint64_t)(get_timestamp(data) & 0xFF) << 36;
+                    new_timestamp += (uint64_t)(get_timestamp(data) & 0xFF) << 36;
                 }
 
                 iFeuH++;
                 if (read16(is, data)) break;
             }
+
+            // Close the buffered event if this header belongs to a new one.
+            // On ZS data (and lossless RAW) the EoE marker fires first and the
+            // buffer is empty here, so this branch is a no-op.
+            if ( !channel.empty() && new_eventID != eventID ) {
+                close_event(st_closed_eventid);
+            }
+            FeuID          = new_FeuID;
+            eventID        = new_eventID;
+            timestamp      = new_timestamp;
+            sampleID       = new_sampleID;
+            fine_timestamp = new_ftst;
 
             if ( debug ){
                 cout
@@ -217,6 +266,10 @@ int DreamDecoder::run() {
             channel.push_back( dreamID*64 + channelID );
             sample.push_back( sampleID );
             amplitude.push_back( ampl );
+            if (sampleID < 256) {
+                ev_sample_seen[sampleID] = true;
+                if ((int)sampleID > max_sample_seen) max_sample_seen = sampleID;
+            }
             if (read16(is, data)) break;
 
         }
@@ -268,6 +321,10 @@ int DreamDecoder::run() {
                 channel.push_back(dreamID * 64 + channelID);
                 sample.push_back(sampleID);
                 amplitude.push_back(ampl);
+                if (sampleID < 256) {
+                    ev_sample_seen[sampleID] = true;
+                    if ((int)sampleID > max_sample_seen) max_sample_seen = sampleID;
+                }
                 channelID++;
                 eof = read16(is, data);
                 if (eof)  break;
@@ -327,14 +384,10 @@ int DreamDecoder::run() {
             // check if this is the end of the event (EoE)
             if (get_EoE(data) == 1) {
 
-                auto a = nt.Fill();  // fill the tree
+                close_event(st_closed_eoe);
 
                 // reset all
                 isEvent = false;
-
-                channel.clear();
-                sample.clear();
-                amplitude.clear();
 
                 if (i == 0) {
                     cout << " reading FEU " << FeuID << endl;
@@ -359,7 +412,61 @@ int DreamDecoder::run() {
         }
     }
 
+    // Final flush: the last event of the file has no following FEU header to
+    // announce a new eventID, so if its EoE packet was dropped it is still
+    // buffered here.
+    if ( !channel.empty() ) {
+        close_event(st_closed_eof);
+        i++;
+    }
+
     cout << " Events analysed : " << i << endl;
+
+    // ------------------------------------------------------------------
+    // decode_stats + sample_acceptance: the loss is otherwise invisible.
+    // A FEU under RAW bandwidth pressure drops sample-groups silently and
+    // exits clean; the missing samples are indistinguishable from quiet
+    // channels.  Every mean waveform must be divided by the acceptance.
+    int samples_expected = max_sample_seen + 1;
+    ULong64_t ev_span = (st_events > 0) ? (ev_max - ev_min + 1) : 0;
+    ULong64_t st_missing = (ev_span > st_events) ? (ev_span - st_events) : 0;
+    Int_t raw_mode = file_is_zs ? 0 : 1;
+
+    TH1D h_acc("sample_acceptance",
+               "fraction of events in which sample-group s was decoded;sample;acceptance",
+               samples_expected > 0 ? samples_expected : 1, 0,
+               samples_expected > 0 ? samples_expected : 1);
+    double acc_sum = 0;
+    for (int s = 0; s < samples_expected; s++) {
+        double a = st_events > 0 ? (double)sample_present[s] / (double)st_events : 0;
+        h_acc.SetBinContent(s + 1, a);
+        acc_sum += a;
+    }
+    Double_t acc_mean = samples_expected > 0 ? acc_sum / samples_expected : 1.0;
+
+    TTree st("decode_stats", "decode_stats");
+    st.SetDirectory(&fout);
+    Int_t st_samples_expected = samples_expected;
+    st.Branch("events",                &st_events,          "events/l");
+    st.Branch("events_missing",        &st_missing,         "events_missing/l");
+    st.Branch("closed_eoe",            &st_closed_eoe,      "closed_eoe/l");
+    st.Branch("closed_eventid",        &st_closed_eventid,  "closed_eventid/l");
+    st.Branch("closed_eof",            &st_closed_eof,      "closed_eof/l");
+    st.Branch("samples_expected",      &st_samples_expected,"samples_expected/I");
+    st.Branch("raw_mode",              &raw_mode,           "raw_mode/I");
+    st.Branch("sample_acceptance_mean",&acc_mean,           "sample_acceptance_mean/D");
+    st.Fill();
+
+    if (st_closed_eventid > 0 || st_missing > 0) {
+        cout << " !! DATA LOSS: " << st_closed_eventid
+             << " events closed by eventID change (dropped EoE packets), "
+             << st_closed_eof << " at EOF, " << st_missing
+             << " events MISSING outright." << endl;
+        if (raw_mode)
+            cout << " !! mean sample completeness "
+                 << acc_mean << " -- divide mean waveforms by the "
+                 << "sample_acceptance histogram." << endl;
+    }
 
     is.close();
     fout.Write();
