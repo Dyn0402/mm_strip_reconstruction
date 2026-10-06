@@ -6,3 +6,4 @@ __pycache__/
 # Local DAQ run data used for manual testing (pedestal/threshold runs,
 # .fdf/.cfg/.prg). 400+ MB, regenerated from the bench -- never tracked.
 test/
+venv/
