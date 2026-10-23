@@ -13,7 +13,7 @@ int main(int argc, char **argv) {
     if (argc < 2)
     {
         std::cerr << "Usage: " << argv[0] << " <input.root> [output.root] [pedestal.root]"
-                     " [--tps <ns>] [--cns <0|1>] [--thr <sigma>] [--mf <samples>]"
+                     " [--tps <ns>] [--cns <0|1>] [--cns-mask <M>] [--thr <sigma>] [--mf <samples>]"
                      " [--zs-baseline <0|1>]\n"
                      "  --thr  gate threshold in noise sigmas (default 5.0; nTOF low-gain ~3)\n"
                      "  --zs-baseline  1 = data is zero-suppressed with ON-FEU pedestal\n"
@@ -34,6 +34,7 @@ int main(int argc, char **argv) {
     float thresholdSigma = -1.0f; // negative means use default (5.0)
     int mfWidth = -999;           // sentinel: leave compiled default (auto)
     int zsBaseline = -1;          // -1 means leave the compiled default (OFF)
+    int cnsMask = 0;              // 0 = plain block-median CNS
     if (argc >= 3) outputFile = argv[2];
     if (argc >= 4) pedestalFile = argv[3];
     for (int i = 4; i < argc - 1; ++i) {
@@ -49,6 +50,9 @@ int main(int argc, char **argv) {
         } else if (std::string(argv[i]) == "--mf") {
             mfWidth = std::stoi(argv[i + 1]);
             ++i;
+        } else if (std::string(argv[i]) == "--cns-mask") {
+            cnsMask = std::stoi(argv[i + 1]);
+            ++i;
         } else if (std::string(argv[i]) == "--zs-baseline") {
             zsBaseline = std::stoi(argv[i + 1]);
             ++i;
@@ -61,6 +65,7 @@ int main(int argc, char **argv) {
     if (thresholdSigma > 0.0f) wf.setThresholdSigma(thresholdSigma);
     if (mfWidth != -999) wf.setMatchedFilterWidth(mfWidth);
     if (zsBaseline >= 0) wf.setZsBaseline(zsBaseline != 0);
+    if (cnsMask > 0) wf.setCnsMask(cnsMask);
     wf.run();
     return 0;
 }

@@ -82,6 +82,75 @@ void applyCommonNoiseSubtraction(DenseEvent& ev)
     }
 }
 
+// Signal-masked common-noise subtraction (opt-in, --cns-mask M; rerun W11, 2026-10-23).  The plain block median
+// moves with the signal when a track covers part of a block: injected into real bench noise, it takes 0.5-6 % off
+// the +-3 neighbours' charge and 1-25 % off the +-5 neighbours' (nTof_x17 rerun/cm_study).  Pass 1 is the plain
+// median; channels in a contiguous cluster (>= 2 adjacent channels over 5 sigma in 2 consecutive samples) are then
+// masked +-M channels, and each block's median is recomputed from the raw waveforms of the channels left, if at
+// least 16 remain (else the plain median stands).  Same rule as nTof_x17 wft.io.masked_block_median.
+void applyMaskedCommonNoiseSubtraction(DenseEvent& ev, const std::vector<float>& rms, int maskHalf)
+{
+    static constexpr int blockSize = 64;
+    static constexpr int minKeep = 16;
+    static constexpr float sigmaCut = 5.0f;
+    static thread_local std::vector<std::vector<float>> raw(DenseEvent::kMaxCh);
+    for (int ch : ev.present) raw[ch] = ev.wf[ch];
+    applyCommonNoiseSubtraction(ev);
+    if (maskHalf <= 0) return;
+
+    std::vector<char> pers(DenseEvent::kMaxCh, 0), sig(DenseEvent::kMaxCh, 0);
+    for (int ch : ev.present) {
+        const auto& w = ev.wf[ch];
+        const float thr = sigmaCut * std::max(rms[ch], 1.0f);
+        for (size_t s = 1; s < w.size(); ++s)
+            if (w[s] > thr && w[s - 1] > thr) { pers[ch] = 1; break; }
+    }
+    bool any = false;
+    for (int ch = 0; ch < DenseEvent::kMaxCh; ) {
+        if (!pers[ch]) { ++ch; continue; }
+        int e = ch;
+        while (e + 1 < DenseEvent::kMaxCh && pers[e + 1]) ++e;
+        if (e > ch) {
+            for (int k = std::max(0, ch - maskHalf); k <= std::min(DenseEvent::kMaxCh - 1, e + maskHalf); ++k) sig[k] = 1;
+            any = true;
+        }
+        ch = e + 1;
+    }
+    if (!any) return;
+
+    float vals[blockSize];
+    size_t lo = 0;
+    while (lo < ev.present.size()) {
+        int blockStart = (ev.present[lo] / blockSize) * blockSize;
+        int blockEnd = blockStart + blockSize;
+        size_t hi = lo;
+        int maxLen = 0, nKeep = 0, nSig = 0;
+        while (hi < ev.present.size() && ev.present[hi] < blockEnd) {
+            int ch = ev.present[hi];
+            maxLen = std::max(maxLen, (int)ev.wf[ch].size());
+            if (sig[ch]) ++nSig; else ++nKeep;
+            ++hi;
+        }
+        if (nSig > 0 && nKeep >= minKeep) {
+            for (int s = 0; s < maxLen; s++) {
+                int n = 0;
+                for (size_t k = lo; k < hi; ++k) {
+                    int ch = ev.present[k];
+                    if (!sig[ch] && s < (int)raw[ch].size()) vals[n++] = raw[ch][s];
+                }
+                if (n == 0) continue;
+                std::nth_element(vals, vals + n / 2, vals + n);
+                float median = vals[n / 2];
+                for (size_t k = lo; k < hi; ++k) {
+                    int ch = ev.present[k];
+                    if (s < (int)raw[ch].size()) ev.wf[ch][s] = raw[ch][s] - median;
+                }
+            }
+        }
+        lo = hi;
+    }
+}
+
 // Boxcar running mean of full width `width` (effective window is the odd
 // 2*(width/2)+1, clamped at the waveform edges). O(N) via a running sum.
 // Used as the matched-filter gate for low-gain mode; the SAME implementation
@@ -502,7 +571,8 @@ void WaveformAnalyzer::analyzeWaveforms() {
         ev.sortPresent();
 
         if (effectiveCNS) {
-            applyCommonNoiseSubtraction(ev);
+            if (cnsMaskHalf > 0) applyMaskedCommonNoiseSubtraction(ev, pedRms, cnsMaskHalf);
+            else applyCommonNoiseSubtraction(ev);
         }
 
         // analyze per channel (ascending channel order)
