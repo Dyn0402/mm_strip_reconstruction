@@ -70,6 +70,9 @@ public:
     void setZsBaseline(bool v)         { zsBaseline = v; }
     // Signal-masked common noise on DATA: mask +-M channels around each cluster before the block median (0 = plain
     // median, the default and bit-identical to before).  RAW data only (ZS forces CNS off anyway).
+    // NOT used for the June hits: judged against M3 tracks it loses 0.5-30 points of track matching, because in
+    // sparks / saturated chips the plain median cancels the coherent shift and the masked one does not (nTof_x17
+    // rerun/CHECKS_2026-10-23.md C13).  It has no coherent-event guard (wft.io's version does).
     void setCnsMask(int v)             { cnsMaskHalf = v; }
     void setMatchedFilterWidth(int v)  { matchedFilterWidth = v; }  // -1 = auto (default), 0 = off (raw gate), >0 = samples
 
